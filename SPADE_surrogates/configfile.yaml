@@ -36,7 +36,7 @@ unit : 's'
 # Data being generated
 processes : ['ppd', 'gamma']
 # Firing rate threshold to exclude neurons in Hz
-firing_rate_threshold : 60
+firing_rate_threshold : 70
 # Seed for the data generation
 seed : 0
 # SNR threshold
