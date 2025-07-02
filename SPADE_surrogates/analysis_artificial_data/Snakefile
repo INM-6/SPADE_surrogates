@@ -1,102 +1,130 @@
-configfile: "../configfile.yaml"
+"""
+Snakemake workflow for SPADE analysis on artificial data.
+
+This workflow performs pattern mining on artificial spike train data using the
+SPADE algorithm with surrogate testing and statistical filtering.
+
+Workflow steps:
+1. Load configuration and estimate occurrence thresholds
+2. Run SPADE analysis on each job (session/epoch/trialtype/pattern_size combination)
+3. Filter results using Pattern Spectrum Filter (PSF) and Pattern Set Reduction (PSR)
+"""
+
 import numpy as np
-from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences\
-    import estimate_number_occurrences
+from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences import estimate_number_occurrences
 
-# The 5 epochs to analyze
+# Load configuration file
+configfile: "../configfile.yaml"
+
+# =============================================================================
+# CONFIGURATION PARAMETERS
+# =============================================================================
+
+# Extract configuration parameters (same as original)
 epochs = config['epochs']
-# The 4 trial types to analyze
 trialtypes = config['trialtypes']
-# The sessions to analyze
 sessions = config['sessions']
-# Absolute (independent of the number of spikes) minimum number
-# of occurrences of a pattern
 abs_min_occ = config['abs_min_occ']
-# Magnitude of the binsize used
 binsize = config['binsize']
-# The percentile for the Poisson distribution to fix the minimum number of occ
 percentile_poiss = config['percentile_poiss']
-# The percentile for the Poisson distribution to fix the minimum number of occ
 percentile_rates = config['percentile_rates']
-# minimum number of spikes per patterns
 abs_min_spikes = config['abs_min_spikes']
-# The winlen parameter for the SPADE analysis
 winlen = config['winlen']
-# Spectrum to use
 spectrum = config['spectrum']
-# Dithering to use to generate surrogates in seconds
 dither = config['dither']
-# Number of surrogates to generate
 n_surr = config['n_surr']
-# Significance level
 alpha = config['alpha']
-# Multitesting statistical correction
 correction = config['correction']
-# PSR parameters
 psr_param = config['psr_param']
-# Unit in which every time of the analysis is expressed
 unit = config['unit']
-# Firing rate threshold to possibly exclude neurons
 firing_rate_threshold = config['firing_rate_threshold']
-# Surrogate method to use
 surr_method = config['surr_method']
-# Data being generated
 processes = config['processes']
-# The sessions to analyze
-sessions = config['sessions']
-contexts = [epoch + '_' +tt for epoch in config['epochs']
-            for tt in config['trialtypes']]
 
-# Create the parameter dictionary
-param_dict, excluded_neurons = \
-    estimate_number_occurrences(
-        sessions=sessions,
-        epochs=epochs,
-        trialtypes=trialtypes,
-        processes=processes,
-        binsize=binsize,
-        abs_min_spikes=abs_min_spikes,
-        abs_min_occ=abs_min_occ,
-        correction=correction,
-        psr_param=psr_param,
-        alpha=alpha,
-        n_surr=n_surr,
-        dither=dither,
-        spectrum=spectrum,
-        winlen=winlen,
-        percentile_poiss=percentile_poiss,
-        percentile_rates=percentile_rates,
-        unit=unit,
-        firing_rate_threshold=firing_rate_threshold,
-        surr_method=surr_method)
+# Create contexts list (same as original)
+contexts = [epoch + '_' + tt for epoch in config['epochs'] for tt in config['trialtypes']]
 
+print(f"Analyzing {len(sessions)} sessions, {len(epochs)} epochs, {len(trialtypes)} trialtypes")
+print(f"Processes: {processes}")
+print(f"Surrogate method: {surr_method}")
 
-# Rule to collect all the results
+# =============================================================================
+# PARAMETER ESTIMATION
+# =============================================================================
+
+print("Estimating minimum occurrence thresholds...")
+
+# Create the parameter dictionary (exactly as in original)
+param_dict, excluded_neurons = estimate_number_occurrences(
+    sessions=sessions,
+    epochs=epochs,
+    trialtypes=trialtypes,
+    processes=processes,
+    binsize=binsize,
+    abs_min_spikes=abs_min_spikes,
+    abs_min_occ=abs_min_occ,
+    correction=correction,
+    psr_param=psr_param,
+    alpha=alpha,
+    n_surr=n_surr,
+    dither=dither,
+    spectrum=spectrum,
+    winlen=winlen,
+    percentile_poiss=percentile_poiss,
+    percentile_rates=percentile_rates,
+    unit=unit,
+    firing_rate_threshold=firing_rate_threshold,
+    surr_method=surr_method)
+
+print("Parameter dictionary created successfully")
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def get_job_results_for_context(wildcards):
+    """
+    Get all job result files for a specific context.
+    
+    This function matches the original select_job_ids_context function exactly.
+    """
+    return [
+        f'../../results/artificial_data/{surr_method}/{wildcards.process}/' \
+        f'{wildcards.session}/{wildcards.context}/{job_id}/results.npy'
+        for job_id in param_dict[wildcards.session][wildcards.process][wildcards.context]
+    ]
+
+# =============================================================================
+# SNAKEMAKE RULES
+# =============================================================================
+
+# Rule to collect all the results (same as original)
 rule all:
     input:
+        # All individual analysis results
         [f'../../results/artificial_data/{surr_method}/{process}/{session}/'
          f'{context}/{job_id}/results.npy'
          for process in processes for session in sessions
          for context in contexts
-         for job_id in param_dict[session][process][context]] + [
-             f'../../results/artificial_data/{surr_method}/{process}/'
-             f'{session}/{context}/filtered_res.npy'
-             for context in contexts
-             for session in sessions for process in processes]
+         for job_id in param_dict[session][process][context]] + 
+        # All filtered results
+        [f'../../results/artificial_data/{surr_method}/{process}/'
+         f'{session}/{context}/filtered_res.npy'
+         for context in contexts
+         for session in sessions for process in processes]
 
-
-# Rule to store the new version of the dictionary containing all the parameters
-# in the case the configfile changed
+# Rule to store the parameter dictionary (same as original)
 rule create_parameter_dict:
     input:
         '../configfile.yaml'
     output:
         'param_dict.npy'
+    message:
+        "Creating parameter dictionary with occurrence thresholds"
     run:
         np.save('./param_dict.npy', param_dict)
 
-
-# Rule to run the SPADE analysis on the data (FIM + spectrum computation)
+# Rule to run the SPADE analysis (same as original)
 rule analyze_data:
     input:
         parameter_file='param_dict.npy',
@@ -104,25 +132,44 @@ rule analyze_data:
         script='spade_analysis.py'
     output:
         '../../results/artificial_data/{surr_method}/{process}/{session}/{context}/{job_id}/results.npy'
+    message:
+        "Running SPADE analysis: {wildcards.session} {wildcards.context} job {wildcards.job_id}"
     shell:
         "mpirun python spade_analysis.py {wildcards.job_id} {wildcards.context} {wildcards.session} {wildcards.process} {wildcards.surr_method}"
 
-
-# Function to create output path for filtered results
-def select_job_ids_context(wildcards):
-    return [
-        f'../../results/artificial_data/{surr_method}/{wildcards.process}/' \
-        f'{wildcards.session}/{wildcards.context}/{job_id}/results.npy'
-        for job_id in param_dict[wildcards.session][wildcards.process][
-            wildcards.context]]
-
-
-# Rule to apply the PSF and the PSR on the mined patterns
+# Rule to apply PSF and PSR filtering (same as original)
 rule filter_results:
     input:
-        results=select_job_ids_context,
+        results=get_job_results_for_context,
         script='filter_results.py'
     output:
         '../../results/artificial_data/{surr_method}/{process}/{session}/{context}/filtered_res.npy'
+    message:
+        "Filtering results: {wildcards.session} {wildcards.context} ({wildcards.process})"
     shell:
         "python filter_results.py {wildcards.context} {wildcards.session} {wildcards.process} {wildcards.surr_method}"
+
+# =============================================================================
+# WORKFLOW VALIDATION (OPTIONAL - DOES NOT CHANGE FUNCTIONALITY)
+# =============================================================================
+
+def validate_workflow():
+    """Optional validation function - does not affect workflow execution."""
+    print("\n=== Workflow Validation ===")
+    
+    total_jobs = 0
+    for session in sessions:
+        for process in processes:
+            for context in contexts:
+                if (session in param_dict and 
+                    process in param_dict[session] and 
+                    context in param_dict[session][process]):
+                    n_jobs = len(param_dict[session][process][context])
+                    total_jobs += n_jobs
+                    print(f"  {session} {process} {context}: {n_jobs} jobs")
+    
+    print(f"Total analysis jobs: {total_jobs}")
+    print("=== Validation Complete ===\n")
+
+# Run validation (optional - doesn't affect workflow)
+validate_workflow()

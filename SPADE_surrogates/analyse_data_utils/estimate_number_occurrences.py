@@ -1,502 +1,592 @@
-import os
-import math
-import copy
+"""
+Improved occurrence estimation for SPADE analysis.
 
+This module estimates the minimum number of occurrences for patterns of different sizes
+using an improved non-stationary Poisson model with geometric mean rate estimation.
+"""
+
+import os
 import numpy as np
-from scipy.stats import binom
+from scipy.stats import poisson
 from scipy.special import binom as binom_coeff
+from scipy.stats.mstats import gmean
 
 import quantities as pq
-
 import yaml
 from yaml import Loader
 
 from SPADE_surrogates.analyse_data_utils import spade_utils as utils
 
 
-def create_rate_dict(
-        session, ep, trialtype, rates_path, binsize, process='original'):
+def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='original'):
     """
-    Function to create rate dictionary in order to estimate the
-    expected number of occurrences of a pattern of defined size
-    under the Poisson assumption.
+    Create rate dictionary for estimating expected pattern occurrences.
 
     Parameters
     ----------
-    session: string
-        recording session
-    ep: str
-        epoch of the trial taken into consideration
-    trialtype: str
-        trialtype taken into consideration
-    rates_path: str
-        path where to store the rate profiles
-    binsize: pq.quantities
-        binsize of the spade analysis
-    process: str, optional
-        model (point process) being analysed and estimated
+    session : str
+        Recording session identifier
+    epoch : str
+        Epoch of the trial (e.g., 'start', 'cue', 'movement')
+    trialtype : str
+        Trial type (e.g., 'PGHF', 'PGLF')
+    rates_path : str
+        Path where to store the rate profiles
+    binsize : pq.Quantity
+        Bin size for the SPADE analysis
+    process : str, optional
+        Point process model being analyzed ('original', 'ppd', 'gamma')
         Default: 'original'
 
     Returns
     -------
-        dictionary of rates:
-        {'rates': sorted rates (in decreased order), 'n_bins': n_bins,
-                  'rates_ordered_by_neuron': rates ordered by neuron id}
+    dict
+        Dictionary containing:
+        - 'rates': sorted rates in descending order
+        - 'n_bins': total number of bins
+        - 'rates_ordered_by_neuron': rates ordered by neuron ID
     """
+    # Define data paths based on process type
+    data_paths = {
+        'original': '../../data/concatenated_spiketrains/',
+        'ppd': '../../data/artificial_data/ppd/',
+        'gamma': '../../data/artificial_data/gamma/'
+    }
+    
+    if process not in data_paths:
+        raise ValueError(f"Process must be one of {list(data_paths.keys())}, got '{process}'")
+    
+    data_path = data_paths[process]
+    
+    # Load spike train data
     if process == 'original':
-        data_path = '../../data/concatenated_spiketrains/'
-    elif process == 'ppd':
-        data_path = '../../data/artificial_data/ppd/'
-    elif process == 'gamma':
-        data_path = '../../data/artificial_data/gamma/'
+        filename = f'{data_path}{session}/{epoch}_{trialtype}.npy'
     else:
-        raise KeyError('Process parameter has to be one of'
-                       ' original, ppd or gamma')
-
-    if process == 'original':
-        sts_units = np.load(
-            f'{data_path}{session}/{ep}_{trialtype}.npy', allow_pickle=True)
-    else:
-        sts_units = np.load(
-            f'{data_path}{session}/{process}_{ep}_{trialtype}.npy',
-            allow_pickle=True)
-
-    length_data = sts_units[0].t_stop
-    # Total number of bins
-    n_bins = int(length_data / binsize)
-    # Compute list of average firing rate
-    rates = []
-    # Loop over neurons
-    for sts in sts_units:
-        spike_count = len(sts)
-        rates.append(spike_count / float(length_data))
-    sorted_rates = sorted(rates)
-    rates_dict = {'rates': sorted_rates, 'n_bins': n_bins,
-                  'rates_ordered_by_neuron': rates}
-    # Create path is not already existing
-    path_temp = './'
-    for folder in utils.split_path(rates_path):
-        path_temp = path_temp + '/' + folder
-        utils.mkdirp(path_temp)
-    np.save(rates_path + '/rates.npy', rates_dict)
+        filename = f'{data_path}{session}/{process}_{epoch}_{trialtype}.npy'
+    
+    spike_trains = np.load(filename, allow_pickle=True)
+    
+    # Calculate basic statistics
+    data_duration = spike_trains[0].t_stop
+    n_bins = int(data_duration / binsize)
+    
+    # Compute firing rates for each neuron
+    firing_rates = []
+    for spike_train in spike_trains:
+        spike_count = len(spike_train)
+        firing_rate = spike_count / float(data_duration)
+        firing_rates.append(firing_rate)
+    
+    # Create rate dictionary
+    sorted_rates = sorted(firing_rates, reverse=True)  # Descending order
+    rates_dict = {
+        'rates': sorted_rates,
+        'n_bins': n_bins,
+        'rates_ordered_by_neuron': firing_rates
+    }
+    
+    # Ensure output directory exists
+    _create_directory_if_needed(rates_path)
+    
+    # Save rates dictionary
+    np.save(os.path.join(rates_path, 'rates.npy'), rates_dict)
+    
     return rates_dict
 
 
-def _storing_initial_parameters(
-        param_dict, session, context, job_counter, binsize, unit, ep, tt,
-        min_spikes, max_spikes, process='original'):
-    if process == 'original':
-        dict_to_store = param_dict[session][context]
-    else:
-        dict_to_store = param_dict[session][process][context]
+def _create_directory_if_needed(path):
+    """Create directory structure if it doesn't exist."""
+    current_path = './'
+    for folder in utils.split_path(path):
+        current_path = os.path.join(current_path, folder)
+        utils.mkdirp(current_path)
 
-    dict_to_store[job_counter] = {
+
+def _get_non_stationarity_factor(epoch, process='original'):
+    """
+    Get non-stationarity factor based on epoch and process type.
+    
+    Different epochs have different levels of firing rate variability:
+    - Start/Wait: Stationary (factor = 1.0)
+    - Movement: Highly variable (factor = 2.5)
+    - Others: Moderately variable (factor = 1.5)
+    
+    Parameters
+    ----------
+    epoch : str
+        Epoch name
+    process : str
+        Process type
+        
+    Returns
+    -------
+    float
+        Non-stationarity factor
+    """
+    stationary_conditions = (
+        epoch in ("start", "wait") or 
+        process in ('homogeneous_poisson', 'stationary_poisson', 'stationary_gamma')
+    )
+    
+    if stationary_conditions:
+        return 1.0
+    elif epoch == "movement":
+        return 2.5
+    else:
+        return 1.5
+
+
+def _calculate_min_occurrence_threshold(rate_ref, binsize, pattern_size, winlen, 
+                                       n_neurons, n_bins, percentile_poiss, 
+                                       non_stationarity=1.0):
+    """
+    Calculate minimum occurrence threshold using improved non-stationary Poisson model.
+    
+    This method accounts for non-stationary firing patterns by modeling high and low
+    rate periods, uses proper Poisson probabilities, and includes multiple comparisons
+    correction.
+    
+    Parameters
+    ----------
+    rate_ref : float
+        Reference firing rate (geometric mean of top neurons)
+    binsize : float
+        Bin size in seconds
+    pattern_size : int
+        Number of spikes in pattern
+    winlen : int
+        Window length for pattern detection
+    n_neurons : int
+        Number of neurons with similar firing rates
+    n_bins : int
+        Total number of bins in the data
+    percentile_poiss : float
+        Percentile for significance threshold (0-100)
+    non_stationarity : float
+        Non-stationarity factor (1.0 = stationary)
+        
+    Returns
+    -------
+    int
+        Minimum occurrence threshold
+    """
+    # Model non-stationary behavior with high and low rate periods
+    normalization_factor = 2 / (non_stationarity + 1)
+    rate_high = non_stationarity * normalization_factor * rate_ref
+    rate_low = normalization_factor * rate_ref
+    
+    # Use proper Poisson probability: P(spike) = 1 - exp(-rate * dt)
+    prob_high = (1 - np.exp(-rate_high * binsize)) ** pattern_size
+    prob_low = (1 - np.exp(-rate_low * binsize)) ** pattern_size
+    
+    # Calculate number of possible pattern combinations
+    # Accounts for temporal arrangements and neuron combinations
+    temporal_combinations = (pattern_size * (pattern_size - 1)) // 2 * winlen ** (pattern_size - 2)
+    neuron_combinations = binom_coeff(n_neurons, pattern_size)
+    total_combinations = temporal_combinations * neuron_combinations
+    
+    # Use average probability for threshold calculation
+    mean_probability = (prob_high + prob_low) / 2
+    expected_count = mean_probability * n_bins
+    
+    # Calculate significance threshold using Poisson distribution
+    # with multiple comparisons correction
+    if expected_count <= 0:
+        return 1
+    
+    # Define range around expected count for threshold search
+    search_range = max(5 * np.sqrt(expected_count), 20)
+    min_count = max(0, int(expected_count - search_range))
+    max_count = int(expected_count + search_range) + 20
+    
+    count_values = np.arange(min_count, max_count + 1)
+    
+    # Calculate cumulative distribution with multiple comparisons correction
+    log_cdf = total_combinations * poisson.logcdf(count_values, expected_count)
+    corrected_cdf = np.exp(log_cdf)
+    
+    # Find threshold at specified percentile
+    target_percentile = percentile_poiss / 100.0
+    threshold_idx = np.searchsorted(corrected_cdf, target_percentile, side="right")
+    
+    if threshold_idx >= len(count_values):
+        return int(count_values[-1])
+    
+    return int(count_values[threshold_idx])
+
+
+def _store_analysis_parameters(param_dict, session, context, job_id, 
+                              analysis_params, process='original'):
+    """
+    Store analysis parameters for a specific job.
+    
+    Parameters
+    ----------
+    param_dict : dict
+        Main parameter dictionary
+    session : str
+        Session identifier
+    context : str
+        Analysis context (epoch_trialtype)
+    job_id : int
+        Job counter/identifier
+    analysis_params : dict
+        Dictionary containing all analysis parameters
+    process : str
+        Process type
+    """
+    # Navigate to correct dictionary location
+    if process == 'original':
+        target_dict = param_dict[session][context]
+    else:
+        target_dict = param_dict[session][process][context]
+    
+    # Store core parameters
+    target_dict[job_id] = {
         'session': session,
-        'trialtype': tt,
-        'binsize': (binsize * pq.s).rescale(unit),
-        'epoch': ep,
-        'min_spikes': min_spikes,
-        'max_spikes': max_spikes}
+        'trialtype': analysis_params['trialtype'],
+        'binsize': (analysis_params['binsize'] * pq.s).rescale(analysis_params['unit']),
+        'epoch': analysis_params['epoch'],
+        'min_spikes': analysis_params['pattern_size'],
+        'max_spikes': analysis_params['pattern_size'],
+        'min_occ': max(analysis_params['min_occ'], analysis_params['abs_min_occ'])
+    }
+    
+    # Add process type for non-original data
     if process != 'original':
-        dict_to_store[job_counter]['process'] = process
+        target_dict[job_id]['process'] = process
+    
+    # Store additional analysis parameters
+    additional_params = [
+        'percentile_poiss', 'winlen', 'correction', 'psr_param', 'alpha',
+        'n_surr', 'abs_min_occ', 'dither', 'spectrum', 'abs_min_spikes', 'surr_method'
+    ]
+    
+    for param in additional_params:
+        if param in analysis_params:
+            target_dict[job_id][param] = analysis_params[param]
 
 
-def _storing_remaining_parameters(
-        param_dict, session, context, job_counter, percentile_poiss,
-        percentile_rates, winlen, correction, psr_param, alpha, n_surr,
-        abs_min_occ, dither, spectrum, abs_min_spikes, surr_method,
-        process='original'):
+def _process_single_condition(process, session, epoch, trialtype, config_params, 
+                             excluded_neurons, param_dict, job_counter):
+    """
+    Process a single experimental condition (session, epoch, trialtype combination).
+    
+    Parameters
+    ----------
+    process : str
+        Process type ('original', 'ppd', 'gamma')
+    session : str
+        Session identifier
+    epoch : str
+        Epoch name
+    trialtype : str
+        Trial type
+    config_params : dict
+        Configuration parameters
+    excluded_neurons : dict
+        Dictionary tracking excluded neurons per session
+    param_dict : dict
+        Main parameter dictionary
+    job_counter : int
+        Current job counter
+        
+    Returns
+    -------
+    int
+        Updated job counter
+    """
+    # Determine rates file path
     if process == 'original':
-        dict_to_store = param_dict[session][context]
+        rates_path = f'../../results/experimental_data/{session}/rates/{epoch}_{trialtype}'
     else:
-        dict_to_store = param_dict[session][process][context]
-    dict_to_store[job_counter]['percentile_poiss'] = percentile_poiss
-    dict_to_store[job_counter]['percentile_rates'] = percentile_rates
-    dict_to_store[job_counter]['winlen'] = winlen
-    dict_to_store[job_counter]['correction'] = correction
-    dict_to_store[job_counter]['psr_param'] = psr_param
-    dict_to_store[job_counter]['alpha'] = alpha
-    dict_to_store[job_counter]['n_surr'] = n_surr
-    dict_to_store[job_counter]['abs_min_occ'] = abs_min_occ
-    dict_to_store[job_counter]['dither'] = dither
-    dict_to_store[job_counter]['spectrum'] = spectrum
-    dict_to_store[job_counter]['abs_min_spikes'] = abs_min_spikes
-    dict_to_store[job_counter]['surr_method'] = surr_method
-
-
-def _calculate_min_occ(percentile_poiss, num_combination_patt, n_bins, p):
-    return int(
-        binom.isf(
-            (1 - percentile_poiss / 100.) / num_combination_patt,
-            n_bins, p))
-
-
-def _store_min_occ(
-        dict_to_store, job_counter, min_occ, abs_min_occ):
-    if min_occ <= abs_min_occ:
-        dict_to_store[job_counter]['min_occ'] = abs_min_occ
-    else:
-        dict_to_store[job_counter]['min_occ'] = min_occ
-
-
-def _estimate_number_occurrence_trialtype(
-        process, session, ep, tt, binsize,
-        firing_rate_threshold, excluded_neurons, param_dict,
-        abs_min_spikes, abs_min_occ, job_counter, unit,
-        percentile_rates, winlen, percentile_poiss, correction,
-        psr_param, alpha, n_surr, dither, spectrum,
-        surr_method):
-    # Path where to store the results
-    if process == 'original':
-        rates_path = f'../../results/experimental_data/' \
-                     f'{session}/rates/{ep}_{tt}'
-    else:
-        rates_path = f'../../results/artificial_data/' \
-                     f'{process}/rates/{session}/{ep}_{tt}'
-    if os.path.exists(rates_path + '/rates.npy'):
-        rates_dict = np.load(rates_path + '/rates.npy',
-                             allow_pickle=True).item()
-        print(tt, np.max(rates_dict['rates']))
+        rates_path = f'../../results/artificial_data/{process}/rates/{session}/{epoch}_{trialtype}'
+    
+    # Load or create rate dictionary
+    rates_file = os.path.join(rates_path, 'rates.npy')
+    if os.path.exists(rates_file):
+        rates_dict = np.load(rates_file, allow_pickle=True).item()
+        print(f"  {trialtype}: max rate = {np.max(rates_dict['rates']):.3f} Hz")
     else:
         rates_dict = create_rate_dict(
             session=session,
-            ep=ep,
-            trialtype=tt,
+            epoch=epoch,
+            trialtype=trialtype,
             rates_path=rates_path,
-            binsize=binsize,
-            process=process)
-    rates = rates_dict['rates']
+            binsize=config_params['binsize'],
+            process=process
+        )
+    
+    # Extract rate information
+    all_rates = rates_dict['rates']
     n_bins = rates_dict['n_bins']
-    rates_by_neuron = np.array(
-        rates_dict['rates_ordered_by_neuron'])
-    # saving excluded neurons per session
-    # and behavioral context
+    rates_by_neuron = np.array(rates_dict['rates_ordered_by_neuron'])
+    
+    # Apply firing rate threshold if specified
+    firing_rate_threshold = config_params.get('firing_rate_threshold')
     if firing_rate_threshold is not None:
-        excluded_neurons[session] = np.append(
-            excluded_neurons[session],
-            np.where(
-                rates_by_neuron > firing_rate_threshold)[0])
-        # remove the eliminated neurons from the rank of rates
+        high_rate_neurons = np.where(rates_by_neuron > firing_rate_threshold)[0]
+        excluded_neurons[session] = np.append(excluded_neurons[session], high_rate_neurons)
+        
         if len(excluded_neurons[session]) > 0:
-            number_excluded_neurons = len(
-                excluded_neurons[session])
-            rates = \
-                rates[:- number_excluded_neurons]
-    context = ep + '_' + tt
+            n_excluded = len(excluded_neurons[session])
+            all_rates = all_rates[:-n_excluded]
+    
+    # Prepare analysis context
+    context = f"{epoch}_{trialtype}"
+    
+    # Initialize parameter storage for this context
     if process == 'original':
         param_dict[session][context] = {}
-        dict_to_store = param_dict[session][context]
     else:
         param_dict[session][process][context] = {}
-        dict_to_store = param_dict[session][process][context]
-    # setting the min spike to the absolute min spikes value
-    min_spikes = abs_min_spikes
-    # Computing min_occ for all possible min_spikes
-    # until min_occ<abs_min_occ
-    min_occ = abs_min_occ + 1
-    min_occ_old = n_bins
-    while min_occ > abs_min_occ:
-        _storing_initial_parameters(
+    
+    # Filter out neurons with zero firing rates
+    active_rates = np.array([rate for rate in all_rates if rate > 0])
+    if len(active_rates) == 0:
+        print(f"  Warning: No active neurons for {session} {epoch} {trialtype}")
+        return job_counter
+    
+    sorted_active_rates = np.sort(active_rates)
+    non_stationarity = _get_non_stationarity_factor(epoch, process)
+    
+    print(f"  Processing pattern sizes 2-6 (non-stationarity: {non_stationarity})")
+    
+    # Process each pattern size from 2 to 6 (inclusive)
+    for pattern_size in range(2, 7):
+        # Calculate reference rate using geometric mean of top neurons
+        if len(sorted_active_rates) >= pattern_size:
+            rate_ref = gmean(sorted_active_rates[-pattern_size:])
+        else:
+            rate_ref = np.mean(sorted_active_rates)
+        
+        # Determine number of neurons with similar firing rates
+        similar_rate_threshold = 0.8 * rate_ref
+        n_similar_neurons = max(
+            np.sum(sorted_active_rates > similar_rate_threshold),
+            pattern_size
+        )
+        
+        # Calculate minimum occurrence threshold
+        min_occ = _calculate_min_occurrence_threshold(
+            rate_ref=rate_ref,
+            binsize=config_params['binsize'],
+            pattern_size=pattern_size,
+            winlen=config_params['winlen'],
+            n_neurons=n_similar_neurons,
+            n_bins=n_bins,
+            percentile_poiss=config_params['percentile_poiss'],
+            non_stationarity=non_stationarity
+        )
+        
+        # Prepare parameters for storage
+        analysis_params = {
+            'trialtype': trialtype,
+            'epoch': epoch,
+            'pattern_size': pattern_size,
+            'min_occ': min_occ,
+            'binsize': config_params['binsize'],
+            'unit': config_params['unit'],
+            'abs_min_occ': config_params['abs_min_occ'],
+            'percentile_poiss': config_params['percentile_poiss'],
+            'winlen': config_params['winlen'],
+            'correction': config_params['correction'],
+            'psr_param': config_params['psr_param'],
+            'alpha': config_params['alpha'],
+            'n_surr': config_params['n_surr'],
+            'dither': config_params['dither'],
+            'spectrum': config_params['spectrum'],
+            'abs_min_spikes': config_params['abs_min_spikes'],
+            'surr_method': config_params['surr_method']
+        }
+        
+        # Store parameters
+        _store_analysis_parameters(
             param_dict=param_dict,
             session=session,
             context=context,
-            process=process,
-            job_counter=job_counter,
-            binsize=binsize,
-            unit=unit,
-            ep=ep,
-            tt=tt,
-            min_spikes=min_spikes,
-            max_spikes=min_spikes)
-        # Fixing a reference rate (percentile)
-        rates_nonzero = np.array(rates)[np.array(rates) > 0]
-        rate_ref = np.percentile(rates_nonzero,
-                                 percentile_rates)
-        # Probability to have one repetition of the pattern
-        # assuming Poisson
-        p = (rate_ref * binsize) ** min_spikes
-        # Computing min_occ as percentile of a
-        # binominal(n_bins, p)
-        # Computing total number of possible patterns
-        # (combinations of lags * combinations of neurons)
-        num_combination_patt = (math.factorial(
-            winlen) / math.factorial(
-            winlen - min_spikes - 1)) * (binom_coeff(
-                len(rates_nonzero), min_spikes))
-        min_occ = _calculate_min_occ(
-            percentile_poiss, num_combination_patt, n_bins, p)
-        # Checking if the new min_occ is smaller than
-        # the previous one (overcorrected the percentile)
-        if min_occ > min_occ_old:
-            num_combination_patt = num_combination_patt_old
-            min_occ = _calculate_min_occ(
-                percentile_poiss, num_combination_patt,
-                n_bins, p)
-        min_occ_old = copy.copy(min_occ)
-        num_combination_patt_old = copy.copy(
-            num_combination_patt)
-        # Storing min_occ
-        _store_min_occ(
-            dict_to_store, job_counter, min_occ, abs_min_occ)
-        # Storing remaining parameters
-        _storing_remaining_parameters(
-            param_dict=param_dict,
-            session=session,
-            process=process,
-            context=context,
-            job_counter=job_counter,
-            percentile_poiss=percentile_poiss,
-            percentile_rates=percentile_rates,
-            winlen=winlen,
-            correction=correction,
-            psr_param=psr_param,
-            alpha=alpha,
-            n_surr=n_surr,
-            abs_min_occ=abs_min_occ,
-            dither=dither,
-            spectrum=spectrum,
-            abs_min_spikes=abs_min_spikes,
-            surr_method=surr_method)
-
-        # Setting parameters for the new iteration
-        min_spikes += 1
+            job_id=job_counter,
+            analysis_params=analysis_params,
+            process=process
+        )
+        
         job_counter += 1
-
-    # additional while loop for patterns up to size 10 to get
-    # separate jobs
-    while min_spikes < 11:
-
-        # from 10 spikes on we look for all patterns together
-        max_spikes = min_spikes if min_spikes < 10 else None
-
-        # Storing parameters
-        _storing_initial_parameters(
-            param_dict=param_dict,
-            session=session,
-            process=process,
-            context=context,
-            job_counter=job_counter,
-            binsize=binsize,
-            unit=unit,
-            ep=ep,
-            tt=tt,
-            min_spikes=min_spikes,
-            max_spikes=max_spikes)
-        # Storing min_occ
-        _store_min_occ(
-            dict_to_store, job_counter, min_occ, abs_min_occ)
-        _storing_remaining_parameters(
-            param_dict=param_dict,
-            session=session,
-            process=process,
-            context=context,
-            job_counter=job_counter,
-            percentile_poiss=percentile_poiss,
-            percentile_rates=percentile_rates,
-            winlen=winlen,
-            correction=correction,
-            psr_param=psr_param,
-            alpha=alpha,
-            n_surr=n_surr,
-            abs_min_occ=abs_min_occ,
-            dither=dither,
-            spectrum=spectrum,
-            abs_min_spikes=abs_min_spikes,
-            surr_method=surr_method)
-
-        # Setting parameters for the new iteration
-        min_spikes += 1
-        job_counter += 1
+        print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, config_params['abs_min_occ'])}")
+    
+    return job_counter
 
 
-def estimate_number_occurrences(
-        sessions, epochs, trialtypes, binsize, abs_min_spikes, abs_min_occ,
-        correction, psr_param, alpha, n_surr, dither, spectrum, winlen,
-        percentile_poiss, percentile_rates, unit, surr_method,
-        firing_rate_threshold, processes=('original', )):
+def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, processes=('original',)):
     """
-    Function estimating the number of occurrences of a random pattern, given
-    its size and a percentile of the rate distribution across all neurons,
-    under the hypothesis of independence of all neurons and poisson
-    distribution of the spike trains.
-    The estimation of the number of occurrences is needed just as a lower bound
-    for the patterns searched by SPADE. Patterns of a fixed size with a lower
-    number of occurrences than the ones estimated by this function
-    are automatically left out from the search.
-    This number is estimated for all sizes until size 10.
-    It also saved a dictionary containing all parameters of the analysis, such
-    that all results can be identified from it.
+    Estimate minimum occurrence thresholds for patterns across all conditions.
+    
+    Uses improved non-stationary Poisson model with geometric mean rate estimation
+    and proper multiple comparisons correction.
 
     Parameters
     ----------
-    sessions: list of strings
-        sessions being analyzed
-    epochs: list of string
-        epochs of the trials being analyzed
-    trialtypes: list of strings
-        trial types being analyzed
-    dither: pq.quantities
-        dithering parameter of the surrogate generation
-    binsize: pq.quantities
-        bin size of the analysis
-    n_surr: int
-        number of surrogates generated
-    winlen: int
-        window length of the spade analysis
-    abs_min_spikes: int
-        minimum number of spikes for a pattern to be detected
-    abs_min_occ: int
-        minimum number of occurrences for a pattern to be detected
-    correction: str
-        type of statistical correction to use in the spade analysis
-    psr_param: list
-        parameters of the psr (see spade documentation)
-    alpha: float
-        alpha value for the statistical testing
-    percentile_poiss: int
-        Percentile of Poisson pattern count to set minimum occ (int between 0
-        and 100)
-    percentile_rates: int
-        the percentile of the rate distribution to use to compute min occ (int
-        between 0 and 100)
-    unit: str
-        unit of the analysis
-    surr_method: str
-        surrogate method being employed
-    firing_rate_threshold: int
-        Firing rate threshold to exclude neurons from the analysis
-    spectrum: str
-        dimensionality of the spectrum of the spade analysis (see spade docs)
-    processes: tuple of str
-        either ('ppd', 'gamma') or ('original', )
-        Default: ('original', )
+    sessions : list of str
+        Recording sessions to analyze
+    epochs : list of str
+        Trial epochs to analyze
+    trialtypes : list of str
+        Trial types to analyze
+    config_params : dict
+        Configuration parameters containing analysis settings
+    processes : tuple of str, optional
+        Process types to analyze ('original', 'ppd', 'gamma')
+        Default: ('original',)
 
     Returns
     -------
-    param_dict: dict
-        dictionary containing the input parameters and the estimated number of
-        occurrences to be used in the spade analysis
-    excluded_neurons: np.array
-        array of neuron ids excluded from the analysis, given the firing rate
-        threshold
+    tuple
+        (param_dict, excluded_neurons) where:
+        - param_dict: Dictionary containing analysis parameters and thresholds
+        - excluded_neurons: Array of neuron IDs excluded from analysis
     """
-    # Computing the min_occ for given a pattern size (min_spikes)
+    print("Starting pattern occurrence estimation...")
+    print(f"Sessions: {sessions}")
+    print(f"Epochs: {epochs}")
+    print(f"Trial types: {trialtypes}")
+    print(f"Processes: {processes}")
+    
+    # Initialize storage
     param_dict = {}
-    # Initialize dictionary with neurons to exclude from analysis by session
-    if firing_rate_threshold is None:
-        excluded_neurons = None
-    else:
+    firing_rate_threshold = config_params.get('firing_rate_threshold')
+    
+    if firing_rate_threshold is not None:
         excluded_neurons = {}
+        print(f"Applying firing rate threshold: {firing_rate_threshold} Hz")
+    else:
+        excluded_neurons = None
+        print("No firing rate threshold applied")
+    
+    # Process each session and process type
     for session in sessions:
+        print(f"\nProcessing session: {session}")
         param_dict[session] = {}
+        
         for process in processes:
-            if not process == 'original':
+            print(f"  Process: {process}")
+            
+            # Initialize process-specific storage
+            if process != 'original':
                 param_dict[session][process] = {}
-
+            
             if firing_rate_threshold is not None:
                 excluded_neurons[session] = np.array([])
-            # Total number of jobs
+            
             job_counter = 0
-            print('session: ', session)
-            print('process: ', process)
-            # For each epoch computation of min_occ relative to min_spikes
-            for ep in epochs:
-                print('epoch: ', ep)
-                # Storing parameters for each trial type
-                for tt in trialtypes:
-                    _estimate_number_occurrence_trialtype(
-                        process, session, ep, tt, binsize,
-                        firing_rate_threshold, excluded_neurons, param_dict,
-                        abs_min_spikes, abs_min_occ, job_counter, unit,
-                        percentile_rates, winlen, percentile_poiss, correction,
-                        psr_param, alpha, n_surr, dither, spectrum,
-                        surr_method)
-
+            
+            # Process each epoch and trial type
+            for epoch in epochs:
+                print(f"  Epoch: {epoch}")
+                
+                for trialtype in trialtypes:
+                    job_counter = _process_single_condition(
+                        process=process,
+                        session=session,
+                        epoch=epoch,
+                        trialtype=trialtype,
+                        config_params=config_params,
+                        excluded_neurons=excluded_neurons,
+                        param_dict=param_dict,
+                        job_counter=job_counter
+                    )
+            
+            # Clean up excluded neurons list
             if firing_rate_threshold is not None:
-                # ensure that excluded neurons are not repeated
-                print(excluded_neurons)
-                excluded_neurons[session] = np.unique(
-                    np.array(excluded_neurons[session]).flatten())
-                # sort the neuron indexes in decreasing order (easy to pop)
-                excluded_neurons[session] = np.sort(
-                    excluded_neurons[session])[::-1]
-    if processes[0] == 'original':
-        if not os.path.exists('../analysis_experimental_data/'
-                              'excluded_neurons.npy'):
-            np.save('../analysis_experimental_data/'
-                    'excluded_neurons.npy', excluded_neurons)
-    else:
-        if not os.path.exists('../analysis_artificial_data/'
-                              'excluded_neurons.npy'):
-            np.save('../analysis_artificial_data/'
-                    'excluded_neurons.npy', excluded_neurons)
+                excluded_neurons[session] = np.unique(excluded_neurons[session])
+                excluded_neurons[session] = np.sort(excluded_neurons[session])[::-1]  # Descending order
+                print(f"  Excluded {len(excluded_neurons[session])} neurons with high firing rates")
+    
+    # Save excluded neurons
+    if excluded_neurons is not None:
+        output_dir = '../analysis_experimental_data/' if processes[0] == 'original' else '../analysis_artificial_data/'
+        excluded_neurons_file = os.path.join(output_dir, 'excluded_neurons.npy')
+        
+        if not os.path.exists(excluded_neurons_file):
+            os.makedirs(output_dir, exist_ok=True)
+            np.save(excluded_neurons_file, excluded_neurons)
+            print(f"Saved excluded neurons to: {excluded_neurons_file}")
+    
+    print("\nPattern occurrence estimation completed!")
     return param_dict, excluded_neurons
 
 
-def execute_estimate_number_of_occurrences(original=True):
-    with open("../configfile.yaml", 'r') as stream:
-        config = yaml.load(stream, Loader=Loader)
-    # The 5 epochs to analyze
-    epochs = config['epochs']
-    # The 4 trial types to analyze
-    trialtypes = config['trialtypes']
-    # The sessions to analyze
-    sessions = config['sessions']
-    # Absolute minimum number of occurrences of a pattern
-    abs_min_occ = config['abs_min_occ']
-    # Magnitude of the binsize used
-    binsize = config['binsize']
-    # The percentile for the Poisson distribution to fix minimum number of occ
-    percentile_poiss = config['percentile_poiss']
-    # The percentile for the Poisson distribution of rates
-    percentile_rates = config['percentile_rates']
-    # minimum number of spikes per patterns
-    abs_min_spikes = config['abs_min_spikes']
-    # The winlen parameter for the SPADE analysis
-    winlen = config['winlen']
-    # Spectrum to use
-    spectrum = config['spectrum']
-    # Dithering to use to generate surrogates in seconds
-    dither = config['dither']
-    # Number of surrogates to generate
-    n_surr = config['n_surr']
-    # Significance level
-    alpha = config['alpha']
-    # Multitesting statistical correction
-    correction = config['correction']
-    # PSR parameters
-    psr_param = config['psr_param']
-    # Unit in which every time of the analysis is expressed
-    unit = config['unit']
-    # Firing rate threshold to possibly exclude neurons
-    firing_rate_threshold = config['firing_rate_threshold']
-    # Surrogate method to use
-    surr_method = config['surr_method']
+def load_configuration(config_file="../configfile.yaml"):
+    """
+    Load configuration parameters from YAML file.
+    
+    Parameters
+    ----------
+    config_file : str
+        Path to configuration file
+        
+    Returns
+    -------
+    dict
+        Configuration parameters
+    """
+    try:
+        with open(config_file, 'r') as stream:
+            config = yaml.load(stream, Loader=Loader)
+        return config
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+    except yaml.YAMLError as e:
+        raise ValueError(f"Error parsing configuration file: {e}")
 
-    if original:
-        processes = ('original', )
+
+def execute_occurrence_estimation(analyze_original=True):
+    """
+    Execute the occurrence estimation process using configuration file.
+    
+    Parameters
+    ----------
+    analyze_original : bool
+        If True, analyze original data. If False, analyze artificial data.
+    """
+    print("Loading configuration...")
+    config = load_configuration()
+    
+    # Extract configuration parameters
+    required_params = [
+        'sessions', 'epochs', 'trialtypes', 'abs_min_occ', 'binsize',
+        'percentile_poiss', 'abs_min_spikes', 'winlen', 'spectrum', 'dither',
+        'n_surr', 'alpha', 'correction', 'psr_param', 'unit', 'surr_method'
+    ]
+    
+    config_params = {}
+    for param in required_params:
+        if param not in config:
+            raise ValueError(f"Required parameter '{param}' not found in configuration")
+        config_params[param] = config[param]
+    
+    # Add optional parameters
+    config_params['firing_rate_threshold'] = config.get('firing_rate_threshold')
+    
+    # Determine processes to analyze
+    if analyze_original:
+        processes = ('original',)
+        print("Analyzing original experimental data")
     else:
-        # Data being generated
-        processes = config['processes']
+        processes = tuple(config.get('processes', ['ppd', 'gamma']))
+        print(f"Analyzing artificial data: {processes}")
+    
+    # Run estimation
+    param_dict, excluded_neurons = estimate_pattern_occurrences(
+        sessions=config_params['sessions'],
+        epochs=config_params['epochs'],
+        trialtypes=config_params['trialtypes'],
+        config_params=config_params,
+        processes=processes
+    )
+    
+    print("Occurrence estimation completed successfully!")
+    return param_dict, excluded_neurons
 
-    # loading parameters
-    estimate_number_occurrences(
-        sessions=sessions,
-        epochs=epochs,
-        trialtypes=trialtypes,
-        binsize=binsize,
-        abs_min_spikes=abs_min_spikes,
-        abs_min_occ=abs_min_occ,
-        correction=correction,
-        psr_param=psr_param,
-        alpha=alpha,
-        n_surr=n_surr,
-        dither=dither,
-        spectrum=spectrum,
-        winlen=winlen,
-        percentile_poiss=percentile_poiss,
-        percentile_rates=percentile_rates,
-        unit=unit,
-        processes=processes,
-        firing_rate_threshold=firing_rate_threshold,
-        surr_method=surr_method)
+
+if __name__ == "__main__":
+    # Example usage
+    execute_occurrence_estimation(analyze_original=True)

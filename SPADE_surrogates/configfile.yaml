@@ -12,7 +12,7 @@ abs_min_spikes : 2.
 # The binsize to use to run the spade analysis in seconds
 binsize : 0.005
 # Percentile of Poisson pattern count to set minimum occ (int between 0 and 100)
-percentile_poiss : 95
+percentile_poiss : 5 # changed with new min_occ function
 # the percentile of the rate distribution to use to compute min occ (int between 0 and 100)
 percentile_rates : 90
 # Spectrum to use

@@ -1,150 +1,56 @@
-import elephant.spade as spade
-import os
+#!/usr/bin/env python3
+"""
+SPADE analysis filtering script for artificial data.
+Fixes the bug where test_signature_significance was called multiple times.
+"""
+
 import argparse
-import quantities as pq
-import numpy as np
+from SPADE_surrogates.analyse_data_utils.filter_results import filter_spade_results
 
 
-# Session and context to analyze
-parser = argparse.ArgumentParser(
-    description='Define parameter for filtering the'
-                ' results of the SPADE analysis on R2G')
+def parse_arguments():
+    """Parse command line arguments for artificial data SPADE analysis."""
+    parser = argparse.ArgumentParser(
+        description='Define parameter for filtering the results'
+                    ' of the SPADE analysis on R2G artificial data')
+    
+    parser.add_argument('context', metavar='context', type=str,
+                        help='behavioral context (epoch_trialtype) to analyze')
+    parser.add_argument('session', metavar='session', type=str,
+                        help='Recording session to analyze')
+    parser.add_argument('process', metavar='process', type=str,
+                        help='Point process to analyze')
+    parser.add_argument('surrogate method', metavar='surr_method', type=str,
+                        help='Surrogate method to use')
+    
+    return parser.parse_args()
 
-parser.add_argument(
-    'context', metavar='context', type=str,
-    help='behavioral context (epoch_trialtype) to analyze')
-parser.add_argument(
-    'session', metavar='session', type=str,
-    help='Recording session to analyze')
-parser.add_argument(
-    'process', metavar='process', type=str,
-    help='Point process to analyze')
-parser.add_argument('surrogate method', metavar='surr_method', type=str,
-                    help='Surrogate method to use')
-args = parser.parse_args()
 
-# Session to analyze
-session_name = args.session
-# Context to analyze
-context = args.context
-# Point process generated as artificial data
-process = args.process
-# surr_method to use
-surr_method = args.surr_method
+def main():
+    """Main function for artificial data analysis."""
+    # Parse command line arguments
+    args = parse_arguments()
+    session_name = args.session
+    context = args.context
+    process = args.process
+    surr_method = args.surr_method
+    
+    print(f"Analyzing artificial data:")
+    print(f"  Session: {session_name}")
+    print(f"  Context: {context}")
+    print(f"  Process: {process}")
+    print(f"  Surrogate method: {surr_method}")
+    
+    # Define paths for artificial data
+    directory = f'../../results/artificial_data/{surr_method}/{process}/{session_name}/{context}'
+    annotations_path = f'../../results/artificial_data/{surr_method}/{process}/{session_name}/{context}/annotations.npy'
+    output_path = f'../../results/artificial_data/{surr_method}/{process}/{session_name}/{context}/filtered_res.npy'
+    
+    # Process the results using shared utility functions
+    filter_spade_results(directory, annotations_path, output_path)
+    
+    print('Artificial data analysis completed successfully!')
 
-# Initialize n_surr and psr_param to None
-n_surr = None
-psr_param = None
-pv_spec = None
 
-# Merging and filtering the results from all epochs nad trialtypes
-directory = f'../../results/artificial_data/{surr_method}/{process}/' \
-    f'{session_name}/{context}'
-concepts = []
-ns_sgnt = []
-# Collecting outputs from  all the jobs
-for path in [x[0] for x in os.walk(directory)][1:]:
-    f = []
-    print(path)
-    for (dirpath, dirnames, filenames) in os.walk(path):
-        if len(filenames) > 1:
-            raise ValueError('More than 1 file in the folder')
-        if len(filenames) == 0:
-            continue
-        filename = filenames[0]
-        results, loading_param, spade_param, configfile_param = np.load(
-            path + '/' + filename, encoding='latin1', allow_pickle=True)
-        print('n concepts', len(results['patterns']))
-        concepts.extend(results['patterns'])
-        # Filtering parameters
-        alpha = configfile_param['alpha']
-        correction = configfile_param['correction']
-        psr_param = configfile_param['psr_param']
-        # SPADE parameters
-        spectrum = configfile_param['spectrum']
-        winlen = configfile_param['winlen']
-        binsize = configfile_param['binsize'] * pq.s
-        n_surr = configfile_param['n_surr']
-        min_spikes = configfile_param['abs_min_spikes']
-        min_occ = configfile_param['abs_min_occ']
-        if n_surr > 0:
-            pv_spec = results['pvalue_spectrum']
-            print('len pv_spec', len(pv_spec))
-            # # # PSF filtering # # #
-            if len(pv_spec) == 0:
-                ns_sgnt.extend([])
-            elif len(pv_spec) > 0 and alpha not in {None, 1}:
-                # Computing non-significant entries of the spectrum applying
-                # the statistical correction
-                ns_sgnt.extend(spade.test_signature_significance(
-                    pv_spec=pv_spec,
-                    concepts=concepts,
-                    alpha=alpha,
-                    winlen=winlen,
-                    corr=correction,
-                    report='non_significant',
-                    spectrum=spade_param['spectrum']))
-
-# Filter concepts with pvalue spectrum (psf)
-if n_surr not in {0, None} and len(ns_sgnt) > 0:
-    concepts = list(filter(
-        lambda c: spade._pattern_spectrum_filter(concept=c,
-                                                 ns_signatures=ns_sgnt,
-                                                 spectrum=spectrum,
-                                                 winlen=winlen), concepts))
-    print('n patt after psf', len(concepts))
-elif n_surr == 0:
-    pv_spec = None
-# # # PSR filtering # # #
-# Decide whether filter the concepts using psr
-if psr_param is not None:
-    # Filter using conditional tests (psr)
-    concepts = spade.pattern_set_reduction(concepts=concepts,
-                                           ns_signatures=ns_sgnt,
-                                           winlen=winlen,
-                                           h_subset_filtering=psr_param[0],
-                                           k_superset_filtering=psr_param[1],
-                                           l_covered_spikes=psr_param[2],
-                                           min_spikes=min_spikes,
-                                           min_occ=min_occ,
-                                           spectrum=spectrum)
-elif n_surr == 0:
-    pv_spec = None
-# Reformatting output
-patterns = spade.concept_output_to_patterns(concepts,
-                                            pv_spec=pv_spec,
-                                            winlen=winlen,
-                                            binsize=binsize,
-                                            spectrum=spectrum)
-# Attching additional info on neurons involved in patterns
-annotations = np.load(
-    f'../../results/artificial_data/{surr_method}/{process}/{session_name}/'
-    f'{context}/annotations.npy',
-    allow_pickle=True).item()
-for patt_idx, selected_patt in enumerate(patterns):
-    selected_patt['channel_ids'] = []
-    selected_patt['unit_ids'] = []
-    selected_patt['connector_aligned_ids'] = []
-    # Id of neurons in the list of spike trains (sts)
-    neurons_ids = selected_patt['neurons']
-    # One subplot per unit
-    for idx, neu_id in enumerate(neurons_ids):
-        annotation = annotations[neu_id]
-        selected_patt['channel_ids'].append(annotation['channel_id'])
-        selected_patt['unit_ids'].append(annotation['unit_id'])
-        selected_patt['connector_aligned_ids'].append(
-            annotation['connector_aligned_id'])
-
-filter_param = {'alpha': alpha,
-                'psr_param': psr_param,
-                'correction': correction,
-                'winlen': winlen,
-                'binsize': binsize,
-                'spectrum': spectrum,
-                'n_surr': n_surr}
-
-# Store merged filtered results
-np.save(
-    f'../../results/artificial_data/{surr_method}/{process}/{session_name}'
-    f'/{context}/filtered_res.npy',
-    [patterns, loading_param, filter_param, configfile_param, spade_param])
+if __name__ == '__main__':
+    main()
