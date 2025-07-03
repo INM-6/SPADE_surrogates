@@ -20,6 +20,15 @@ configfile: "../configfile.yaml"
 # CONFIGURATION PARAMETERS
 # =============================================================================
 
+# MPI configuration for reproducible results
+MPI_RANKS = config.get('mpi_ranks', 24)  # Default to 24 ranks if not specified
+
+print(f"MPI configuration: Using {MPI_RANKS} ranks for all SPADE analyses")
+
+# =============================================================================
+# CONFIGURATION PARAMETERS
+# =============================================================================
+
 # Extract configuration parameters (same as original)
 epochs = config['epochs']
 trialtypes = config['trialtypes']
@@ -135,7 +144,27 @@ rule analyze_data:
     message:
         "Running SPADE analysis: {wildcards.session} {wildcards.context} job {wildcards.job_id}"
     shell:
-        "mpirun python spade_analysis.py {wildcards.job_id} {wildcards.context} {wildcards.session} {wildcards.process} {wildcards.surr_method}"
+        """
+        echo "Starting SPADE analysis for artificial data"
+        echo "Session: {wildcards.session}"
+        echo "Context: {wildcards.context}"
+        echo "Job ID: {wildcards.job_id}"
+        echo "Process: {wildcards.process}"
+        echo "Surrogate method: {wildcards.surr_method}"
+        echo "MPI ranks: """ + str(MPI_RANKS) + """
+        echo "Activating virtual environment..."
+        
+        source ~/spade_env/bin/activate
+        
+        mpirun -n """ + str(MPI_RANKS) + """ python spade_analysis.py \
+            {wildcards.job_id} \
+            {wildcards.context} \
+            {wildcards.session} \
+            {wildcards.process} \
+            {wildcards.surr_method}
+        
+        echo "SPADE analysis completed for job {wildcards.job_id}"
+        """
 
 # Rule to apply PSF and PSR filtering (same as original)
 rule filter_results:
@@ -147,7 +176,25 @@ rule filter_results:
     message:
         "Filtering results: {wildcards.session} {wildcards.context} ({wildcards.process})"
     shell:
-        "python filter_results.py {wildcards.context} {wildcards.session} {wildcards.process} {wildcards.surr_method}"
+        """
+        echo "Starting result filtering for artificial data"
+        echo "Session: {wildcards.session}"
+        echo "Context: {wildcards.context}"
+        echo "Process: {wildcards.process}"
+        echo "Surrogate method: {wildcards.surr_method}"
+        echo "Number of job results to merge: $(echo {input.results} | wc -w)"
+        echo "Activating virtual environment..."
+        
+        source ~/spade_env/bin/activate
+        
+        python filter_results.py \
+            {wildcards.context} \
+            {wildcards.session} \
+            {wildcards.process} \
+            {wildcards.surr_method}
+        
+        echo "Result filtering completed"
+        """
 
 # =============================================================================
 # WORKFLOW VALIDATION (OPTIONAL - DOES NOT CHANGE FUNCTIONALITY)
