@@ -1,7 +1,10 @@
 """
-This script creates the ad-hoc modeled artificial data mimicking experimental
-data's features
+Spike Train Analysis with Artificial Data Generation
+
+This generates artificial data using
+Poisson processes with refractory periods and Gamma processes.
 """
+
 # -*- coding: utf-8 -*-
 import math
 import sys
@@ -556,210 +559,307 @@ def get_shape_factor_from_cv2(cv2):
 
 def get_cv_operational_time(spiketrain, rate_list, sep):
     """
-    calculates cv of spike train in operational time
-
+    Calculate coefficient of variation (CV) of spike train in operational time.
+    
+    Operational time is defined as the integral of the firing rate over time,
+    which accounts for time-varying firing rates.
+    
     Parameters
     ----------
-
+    spiketrain : neo.SpikeTrain
+        Input spike train data
+    rate_list : list
+        List of firing rates corresponding to each trial
+    sep : pq.Quantity
+        Separation time between trials
+        
     Returns
     -------
     cv : float
+        Coefficient of variation in operational time
     """
-    # deconcatenate spike train into list of trials
+    # Split concatenated spike train into individual trials
     trial_list = create_st_list(spiketrain, sep=sep)
     isis_operational_time = []
 
-    # requiring at least one spike per trial, if not returning cv=1
-    if sum(len(trial)for trial in trial_list) < len(trial_list):
+    # Return CV=1 if there's less than one spike per trial on average
+    total_spikes = sum(len(trial) for trial in trial_list)
+    if total_spikes < len(trial_list):
         return 1
 
-    for rate, trial in zip(rate_list, trial_list):
-        # check there is at least one ISI per trial
-        if len(trial) > 1:
-            # The time points at which the firing rates are given
-            real_time = np.hstack((rate.times.simplified.magnitude,
-                                   rate.t_stop.simplified.magnitude))
-            # indices where between which points in real time the spikes lie
-            indices = np.searchsorted(real_time, trial)
+    # Process each trial with its corresponding firing rate
+    for firing_rate, trial_spikes in zip(rate_list, trial_list):
+        # Skip trials with fewer than 2 spikes (no ISIs possible)
+        if len(trial_spikes) <= 1:
+            continue
+            
+        # Create time points including start and stop times
+        real_time_points = np.hstack((
+            firing_rate.times.simplified.magnitude,
+            firing_rate.t_stop.simplified.magnitude
+        ))
+        
+        # Find which time bins contain each spike
+        spike_bin_indices = np.searchsorted(real_time_points, trial_spikes)
 
-            # Operational time corresponds to the integral
-            # of the firing rate over time
-            operational_time = np.cumsum(
-                (rate*rate.sampling_period).simplified.magnitude)
-            operational_time = np.hstack((0., operational_time))
-            # In real time the spikes are first aligned
-            # to the left border of the bin.
-            trial_operational_time = operational_time[indices - 1]
-            # the relative position of the spikes in the operational time bins
-            positions_in_bins = \
-                (trial_operational_time - real_time[indices - 1]) / \
-                rate.sampling_period.simplified.magnitude
-            # add the positions in the bin times the sampling period in op time
-            trial_operational_time += \
-                (operational_time[indices] - operational_time[indices-1]) \
-                * positions_in_bins
-            # add isis per trial into the overall list
-            isis_operational_time.append(np.diff(trial_operational_time))
+        # Calculate operational time as cumulative integral of firing rate
+        rate_magnitude = firing_rate.simplified.magnitude
+        sampling_period = firing_rate.sampling_period.simplified.magnitude
+        operational_time_cumsum = np.cumsum(rate_magnitude * sampling_period)
+        operational_time_points = np.hstack((0., operational_time_cumsum))
+        
+        # Map spikes to operational time
+        # Start with left border alignment
+        spike_operational_times = operational_time_points[spike_bin_indices - 1]
+        
+        # Calculate relative position within each bin
+        spike_positions_in_bins = (
+            (trial_spikes - real_time_points[spike_bin_indices - 1]) / 
+            sampling_period
+        )
+        
+        # Add interpolated position within operational time bins
+        bin_operational_durations = (
+            operational_time_points[spike_bin_indices] - 
+            operational_time_points[spike_bin_indices - 1]
+        )
+        spike_operational_times += (
+            bin_operational_durations * spike_positions_in_bins
+        )
+        
+        # Calculate inter-spike intervals in operational time
+        trial_isis = np.diff(spike_operational_times)
+        isis_operational_time.append(trial_isis)
 
-    number_of_isis = np.sum([len(trial_isi) for trial_isi
-                             in isis_operational_time])
-    cv = 1
-    if number_of_isis > 3:
-        mean_isi = \
-            np.sum([np.sum(trial_isi) for trial_isi in
-                    isis_operational_time]) / \
-            number_of_isis
-
-        variance_isi = np.sum(
-            [np.sum((trial_isi - mean_isi) ** 2) for trial_isi
-             in isis_operational_time]) / number_of_isis
+    # Calculate coefficient of variation from all ISIs
+    total_isis = np.sum([len(trial_isi) for trial_isi in isis_operational_time])
+    cv = 1  # Default value
+    
+    if total_isis > 3:  # Need sufficient data for reliable CV estimate
+        # Calculate mean ISI across all trials
+        mean_isi = (
+            np.sum([np.sum(trial_isi) for trial_isi in isis_operational_time]) / 
+            total_isis
+        )
+        
+        # Calculate variance of ISIs
+        variance_isi = np.sum([
+            np.sum((trial_isi - mean_isi) ** 2) 
+            for trial_isi in isis_operational_time
+        ]) / total_isis
+        
+        # CV = standard deviation / mean
         cv = np.sqrt(variance_isi) / mean_isi
 
     return cv
 
 
-def generate_artificial_data(data, seed, max_refractory, processes,
-                             sep):
+
+def generate_artificial_data(data, seed, max_refractory, processes, sep):
     """
-    Generate data as Poisson with refractory period and Gamma
+    Generate artificial spike train data using Poisson and Gamma processes.
+    
+    This function creates artificial data that matches the statistical properties
+    of the input data, including firing rates, refractory periods, and 
+    coefficient of variation.
+    
     Parameters
     ----------
-    data: list
-        list of spiketrains
-    seed: int
-        seed for the data generation
-    max_refractory: quantity
-        maximal refractory period
-    processes: list
-        processes to be generated
-    sep: pq.Quantity
-        buffering between two trials
-
-
+    data : list
+        List of neo.SpikeTrain objects (experimental data)
+    seed : int
+        Random seed for reproducible generation
+    max_refractory : pq.Quantity
+        Maximum refractory period to consider
+    processes : list
+        List of process types to generate ('ppd' and/or 'gamma')
+    sep : pq.Quantity
+        Buffer time between trials
+        
     Returns
     -------
-    ppd_spiketrains: list
-        list of poisson processes (neo.SpikeTrain) with rate profile and
-        refractory period estimated from data
-    gamma_spiketrains: list
-        list of gamma processes (neo.SpikeTrain) with rate profile and
-        shape (cv) estimated from data
-    cv_list : list
-        list of cvs, estimated from data, one for each neuron
-
+    ppd_spiketrains : list
+        Poisson processes with refractory period (if 'ppd' in processes)
+    gamma_spiketrains : list
+        Gamma processes (if 'gamma' in processes)
+    cv2_values : list
+        CV2 values estimated from original data
     """
-
-    # Setting random seed globally
+    # Set random seed for reproducibility
     np.random.seed(seed=seed)
 
-    rates = []
-    refractory_periods = []
+    # Initialize storage lists
+    estimated_rates = []
+    estimated_refractory_periods = []
     ppd_spiketrains = []
     gamma_spiketrains = []
-    cv2s = []
+    cv2_values = []
 
-    for spiketrain in tqdm(data):
-        # estimate statistics
-        rate, refractory_period, rate_list = \
-            estimate_rate_deadtime(spiketrain=spiketrain,
-                                   max_refractory=max_refractory,
-                                   sep=sep)
+    print(f"Generating artificial data for {len(data)} spike trains...")
+    
+    for spiketrain in tqdm(data, desc="Processing spike trains"):
+        # Estimate firing rate and refractory period from data
+        firing_rate, refractory_period, rate_profile_list = (
+            estimate_rate_deadtime(
+                spiketrain=spiketrain,
+                max_refractory=max_refractory,
+                sep=sep
+            )
+        )
+        
+        # Calculate CV2 (coefficient of variation based on adjacent ISIs)
         cv2 = get_cv2(spiketrain, sep=sep)
-        rates.append(rate)
-        refractory_periods.append(refractory_period)
-        cv2s.append(cv2)
+        
+        # Store estimated parameters
+        estimated_rates.append(firing_rate)
+        estimated_refractory_periods.append(refractory_period)
+        cv2_values.append(cv2)
 
+        # Generate Poisson process with refractory period
         if 'ppd' in processes:
-            # generating Poisson spike trains with refractory period
             ppd_spiketrain = stg.inhomogeneous_poisson_process(
-                rate=rate,
+                rate=firing_rate,
                 as_array=False,
-                refractory_period=refractory_period)
+                refractory_period=refractory_period
+            )
+            # Preserve original annotations and units
             ppd_spiketrain.annotate(**spiketrain.annotations)
             ppd_spiketrain = ppd_spiketrain.rescale(pq.s)
             ppd_spiketrains.append(ppd_spiketrain)
 
+        # Generate Gamma process
         if 'gamma' in processes:
-            cv = get_cv_operational_time(spiketrain=spiketrain,
-                                         rate_list=rate_list,
-                                         sep=sep)
-            shape_factor = 1 / cv ** 2
-            print('cv = ', cv, 'shape_factor = ', shape_factor)
-            if np.count_nonzero(rate) != 0:
+            # Calculate CV in operational time for shape parameter
+            cv_operational = get_cv_operational_time(
+                spiketrain=spiketrain,
+                rate_list=rate_profile_list,
+                sep=sep
+            )
+            
+            # Shape factor is inverse of CV squared
+            shape_factor = 1 / (cv_operational ** 2)
+            print(f'CV = {cv_operational:.3f}, Shape factor = {shape_factor:.3f}')
+            
+            # Generate Gamma process if there's any activity
+            if np.count_nonzero(firing_rate) != 0:
                 gamma_spiketrain = stg.inhomogeneous_gamma_process(
-                    rate=rate, shape_factor=shape_factor)
+                    rate=firing_rate, 
+                    shape_factor=shape_factor
+                )
             else:
-                gamma_spiketrain = neo.SpikeTrain([]*pq.s,
-                                                  t_start=spiketrain.t_start,
-                                                  t_stop=spiketrain.t_stop)
+                # Create empty spike train for inactive neurons
+                gamma_spiketrain = neo.SpikeTrain(
+                    [] * pq.s,
+                    t_start=spiketrain.t_start,
+                    t_stop=spiketrain.t_stop
+                )
+            
+            # Preserve original annotations
             gamma_spiketrain.annotate(**spiketrain.annotations)
             gamma_spiketrains.append(gamma_spiketrain)
-    return ppd_spiketrains, gamma_spiketrains, cv2s
+    
+    return ppd_spiketrains, gamma_spiketrains, cv2_values
 
 
-if __name__ == '__main__':
+def main():
+    """
+    Main execution function that processes experimental data and generates
+    artificial spike trains based on configuration parameters.
+    """
     import rgutils
     import yaml
     from yaml import Loader
 
+    # Load configuration parameters
+    print("Loading configuration...")
     with open("configfile.yaml", 'r') as stream:
         config = yaml.load(stream, Loader=Loader)
 
+    # Extract configuration parameters
     sessions = config['sessions']
     epochs = config['epochs']
     trialtypes = config['trialtypes']
     winlen = config['winlen']
     unit = config['unit']
     binsize = (config['binsize'] * pq.s).rescale(unit)
-    firing_rate_threshold = config['firing_rate_threshold']
     seed = config['seed']
     processes = config['processes']
-    SNR_thresh = 2.5
-    synchsize = 2
-    sep = 2 * winlen * binsize
-    max_refractory = 4 * pq.ms
+    
+    # Analysis parameters
+    SNR_threshold = config['SNR_thresh']
+    synch_size = config['synchsize']
+    trial_separation = 2 * winlen * binsize
+    max_refractory_period = 4 * pq.ms
     load_original_data = False
 
+    print(f"Configuration loaded. Processing {len(sessions)} sessions...")
+    print(f"Epochs: {epochs}")
+    print(f"Trial types: {trialtypes}")
+    print(f"Processes to generate: {processes}")
+
+    # Process each session, epoch, and trial type combination
     for session in sessions:
-        if not os.path.exists(f'../data/artificial_data/ppd/{session}'):
-            os.makedirs(f'../data/artificial_data/ppd/{session}')
-        if not os.path.exists(f'../data/artificial_data/gamma/{session}'):
-            os.makedirs(f'../data/artificial_data/gamma/{session}')
+        # Create output directories
+        ppd_dir = f'../data/artificial_data/ppd/{session}'
+        gamma_dir = f'../data/artificial_data/gamma/{session}'
+        
+        if not os.path.exists(ppd_dir):
+            os.makedirs(ppd_dir)
+        if not os.path.exists(gamma_dir):
+            os.makedirs(gamma_dir)
+
         for epoch in epochs:
             for trialtype in trialtypes:
-                print(f'Loading data {session} {epoch} {trialtype}')
+                print(f'\n--- Processing: {session} | {epoch} | {trialtype} ---')
+                
+                # Load spike train data
                 if load_original_data:
-                    print('Loading experimental data')
-                    sts = rgutils.load_epoch_concatenated_trials(
+                    print('Loading experimental data...')
+                    spike_trains = rgutils.load_epoch_concatenated_trials(
                         session,
                         epoch,
                         trialtypes=trialtype,
-                        SNRthresh=SNR_thresh,
-                        synchsize=synchsize,
-                        sep=sep)
+                        SNRthresh=SNR_threshold,
+                        synchsize=synch_size,
+                        sep=trial_separation
+                    )
                 else:
-                    print('Loading already concatenated spiketrains')
-                    sts = np.load(f'../data/concatenated_spiketrains/'
-                                  f'{session}/'
-                                  f'{epoch}_{trialtype}.npy',
-                                  allow_pickle=True)
+                    print('Loading pre-concatenated spike trains...')
+                    data_path = (
+                        f'../data/concatenated_spiketrains/{session}/'
+                        f'{epoch}_{trialtype}.npy'
+                    )
+                    spike_trains = np.load(data_path, allow_pickle=True)
 
-                print("Generating data")
-                ppd, gamma, cv2s = \
-                    generate_artificial_data(data=sts,
-                                             seed=seed,
-                                             max_refractory=max_refractory,
-                                             processes=processes,
-                                             sep=sep)
+                # Generate artificial data
+                print("Generating artificial data...")
+                ppd_trains, gamma_trains, cv2_list = generate_artificial_data(
+                    data=spike_trains,
+                    seed=seed,
+                    max_refractory=max_refractory_period,
+                    processes=processes,
+                    sep=trial_separation
+                )
 
-                print('Finished data generation')
+                print('Data generation complete!')
 
-                print('Storing data...')
+                # Save generated data
+                print('Saving data...')
                 if 'ppd' in processes:
-                    np.save(f'../data/artificial_data/ppd/{session}/'
-                            f'ppd_{epoch}_{trialtype}.npy', ppd)
+                    ppd_filename = f'{ppd_dir}/ppd_{epoch}_{trialtype}.npy'
+                    np.save(ppd_filename, ppd_trains)
+                    print(f'Saved PPD data: {ppd_filename}')
+                
                 if 'gamma' in processes:
-                    np.save(f'../data/artificial_data/gamma/{session}/'
-                            f'gamma_{epoch}_{trialtype}.npy', gamma)
-                    np.save(f'../data/artificial_data/gamma/{session}/'
-                            f'cv2s_{epoch}_{trialtype}.npy', cv2s)
+                    gamma_filename = f'{gamma_dir}/gamma_{epoch}_{trialtype}.npy'
+                    cv2_filename = f'{gamma_dir}/cv2s_{epoch}_{trialtype}.npy'
+                    np.save(gamma_filename, gamma_trains)
+                    np.save(cv2_filename, cv2_list)
+                    print(f'Saved Gamma data: {gamma_filename}')
+                    print(f'Saved CV2 data: {cv2_filename}')
+
+    print("\n=== All processing complete! ===")
+
+
+if __name__ == '__main__':
+    main()
