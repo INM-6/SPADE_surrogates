@@ -8,15 +8,15 @@ import sys
 import numpy as np
 import quantities as pq
 
-sys.path.insert(0, '../data/multielectrode_grasp/code/python-neo')
+# sys.path.insert(0, '../data/multielectrode_grasp/code/python-neo')
 sys.path.insert(0, '../data/multielectrode_grasp/code/python-odml')
 import neo
 
 sys.path.insert(0, '../data/multielectrode_grasp/code/reachgraspio')
 import reachgraspio as rgio
 
-sys.path.insert(0, '../data/multielectrode_grasp/code')
-from neo_utils import add_epoch, cut_segment_by_epoch, get_events
+# sys.path.insert(0, '../data/multielectrode_grasp/code')
+# from neo_utils import add_epoch, cut_segment_by_epoch, get_events
 
 
 def data_path(session):
@@ -270,8 +270,7 @@ def load_session_sts(
     return sts
 
 
-def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
-                        verbose=False):
+def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0, verbose=False):
     """
     Load SUA spike trains of specific session and epoch from Lilou's data.
 
@@ -293,18 +292,17 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
 
     The pre-defined epochs, the associated triggers, and the time spans
     t_pre and t_post (before and after the trigger, respectively) are:
-    * epoch='start'     :  trigger='FP-ON'   t_pre=250 ms   t_post=250 ms
+    * epoch='start'     :  trigger='TS-ON'   t_pre=250 ms   t_post=250 ms
     * epoch='cue1'      :  trigger='CUE-ON'  t_pre=250 ms   t_post=250 ms
-    * epoch='earlydelay':  trigger='FP-ON'   t_pre=0 ms     t_post=500 ms
+    * epoch='earlydelay':  trigger='CUE-OFF' t_pre=0 ms     t_post=500 ms
     * epoch='latedelay' :  trigger='GO-ON'   t_pre=500 ms   t_post=0 ms
     * epoch='movement'  :  trigger='SR'      t_pre=200 ms   t_post=300 ms
-    * epoch='hold'      :  trigger='RW'      t_pre=500 ms   t_post=0 ms
+    * epoch='hold'      :  trigger='RW-ON'   t_pre=500 ms   t_post=0 ms
 
     Parameters:
     -----------
-    session : str of session loaded with ReachGraspIO
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
+    session_name : str
+        Name of a recording subsession. E.g: 'l101126-002'
     epoch : str or triplet
         if str, defines a trigger and a time segment around it (see above).
         if a triplet (tuple with 3 elements), its elements are, in order:
@@ -313,43 +311,30 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
           trigger. (> 0 for times before the trigger, < 0 for time after it)
         * t_post [Quantity] : the right end of the time segment around the
           trigger. (> 0 for times after the trigger, < 0 for time before it)
-    trialtypes : str
-        One  trial type, among those present in the session.
+    trialtypes : str, optional
+        One trial type, among those present in the session.
         8 Classical trial types for Lilou's sessions are:
-        'SGHF', 'SGLF', 'PGHF', PGLF', 'HFSG', 'LFSG', 'HFPG', 'LFPG'.
+        'SGHF', 'SGLF', 'PGHF', 'PGLF', 'HFSG', 'LFSG', 'HFPG', 'LFPG'.
         trialtypes can be one of such strings, or None.
         If None, all trial types in the session are considered.
         Default: None
     SNRthresh : float, optional
-        lower threshold for the waveforms' SNR of SUAs to be considered.
+        Lower threshold for the waveforms' SNR of SUAs to be considered.
         SUAs with a lower or equal SNR are not loaded.
         Default: 0
-    dt : Quantity, optional
-        time lag within which synchronous spikes are considered highly
-        synchronous ("synchrofacts"). If None, the sampling period of the
-        recording system (1 * session.nev_unit) is used.
-        Default: None
-    dt2 : Quantity, optional
-        isolated spikes falling within a time lag dt2 from synchrofacts (see
-        parameter dt) to be removed (see parameter synchsize) are also
-        removed. If None, the sampling period of the recording system
-        (1 * session.nev_unit) is used.
-        Default: None
     verbose : bool, optional
         Whether to print information as different steps are run
 
     Returns:
     --------
     data : dict
-        a dictionary having SUA IDs as keys (see st_id) and lists of
-        SpikeTrains as corresponding values.
-        Each SpikeTrain corresponds to the SUA spikes in one trial (having
-        the specified trial type(s)), during the specified epoch. It retains
-        the annotations (e.g. trial, electrode and unit id) of the original
-        data. Additionally, it has the keys 'trial_type', 'epoch', 'trigger',
-        't_pre' and 't_post', as specified in input
+        A dictionary having SUA IDs as keys and lists of SpikeTrains as 
+        corresponding values. Each SpikeTrain corresponds to the SUA spikes 
+        in one trial (having the specified trial type(s)), during the 
+        specified epoch.
     """
-    # Define trigger, t_pre, t_post depending on session_name
+    
+    # Define trigger, t_pre, t_post depending on epoch
     if epoch == 'start':
         trigger, t_pre, t_post = 'TS-ON', -250 * pq.ms, 250 * pq.ms
     elif epoch == 'cue1':
@@ -377,6 +362,7 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
         print("  > load session %s, and define Block around trigger '%s'..." %
               (session_name, trigger))
 
+    # Read block with all data
     block = session.read_block(
         nsx_to_load=None,
         n_starts=None,
@@ -385,38 +371,154 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
         units='all',
         load_events=True,
         load_waveforms=False,
-        scaling='raw')
+        scaling='raw'
+    )
 
     data_segment = block.segments[0]
-    start_events = get_events(
+    
+    # Find events with the specified trigger using modern Neo filter method
+    start_events = _get_events_by_properties(
         data_segment,
         properties={
             'trial_event_labels': trigger,
-            'performance_in_trial': session.performance_codes[
-                'correct_trial']})
+            'performance_in_trial': session.performance_codes['correct_trial']
+        }
+    )
+    
+    if not start_events:
+        if verbose:
+            print(f"No events found for trigger '{trigger}'")
+        return {}
+    
     start_event = start_events[0]
-    epoch = add_epoch(
+    
+    # Create epochs around the events using modern Neo approach
+    epoch_obj = _create_epoch_from_events(
         data_segment,
-        event1=start_event, event2=None,
-        pre=t_pre, post=t_post,
-        attach_result=False,
-        name='{}'.format(epoch))
-    cut_trial_block = neo.Block(name="Cut_Trials")
-    cut_trial_block.segments = cut_segment_by_epoch(
-        data_segment, epoch, reset_time=True)
-    selected_trial_segments = cut_trial_block.filter(
-        targdict={'belongs_to_trialtype': trialtypes}, objects=neo.Segment)
+        start_event,
+        t_pre=t_pre,
+        t_post=t_post,
+        name=str(epoch)
+    )
+    
+    # Cut segments by epoch using modern Neo time slicing
+    cut_trial_segments = _cut_segment_by_epoch_modern(
+        data_segment, 
+        epoch_obj, 
+        reset_time=True
+    )
+    
+    # Filter segments by trial type using modern Neo filter
+    if trialtypes is not None:
+        selected_trial_segments = [
+            seg for seg in cut_trial_segments 
+            if seg.annotations.get('belongs_to_trialtype') == trialtypes
+        ]
+    else:
+        selected_trial_segments = cut_trial_segments
+    
+    # Extract spike trains with SNR filtering
     data = {}
     for seg_id, seg in enumerate(selected_trial_segments):
-        for st in seg.filter({'sua': True}):
-            # Check the SNR
-            if st.annotations['SNR'] > SNRthresh:
+        # Filter spike trains that are SUAs using modern approach
+        sua_spiketrains = [
+            st for st in seg.spiketrains 
+            if st.annotations.get('sua', False)
+        ]
+        
+        for st in sua_spiketrains:
+            # Check the SNR threshold
+            if st.annotations.get('SNR', 0) > SNRthresh:
                 sua_id = _check_snr(st, seg, seg_id)
-                try:
-                    data[sua_id].append(st)
-                except KeyError:
-                    data[sua_id] = [st]
+                if sua_id not in data:
+                    data[sua_id] = []
+                data[sua_id].append(st)
+    
     return data
+
+
+def _get_events_by_properties(segment, properties):
+    """
+    Modern replacement for get_events function.
+    Filter events in a segment based on properties.
+    """
+    matching_events = []
+    
+    for event in segment.events:
+        match = True
+        for prop_name, prop_value in properties.items():
+            event_value = event.annotations.get(prop_name)
+            if event_value != prop_value:
+                match = False
+                break
+        
+        if match:
+            matching_events.append(event)
+    
+    return matching_events
+
+
+def _create_epoch_from_events(segment, event, t_pre, t_post, name=None):
+    """
+    Modern replacement for add_epoch function.
+    Create an Epoch object from events with pre and post time offsets.
+    """
+    # Calculate start times and durations
+    start_times = event.times + t_pre
+    durations = (t_post - t_pre) * np.ones(len(event.times))
+    
+    # Create epoch object
+    epoch = neo.Epoch(
+        times=start_times,
+        durations=durations,
+        labels=event.labels if hasattr(event, 'labels') else None,
+        name=name
+    )
+    
+    # Copy relevant annotations
+    for key, value in event.annotations.items():
+        epoch.annotate(**{key: value})
+    
+    return epoch
+
+
+def _cut_segment_by_epoch_modern(segment, epoch, reset_time=True):
+    """
+    Modern replacement for cut_segment_by_epoch function.
+    Cut a segment into multiple segments based on epoch timing using modern Neo.
+    """
+    cut_segments = []
+    
+    for i, (start_time, duration) in enumerate(zip(epoch.times, epoch.durations)):
+        stop_time = start_time + duration
+        
+        # Use modern Neo time_slice method
+        try:
+            cut_segment = segment.time_slice(start_time, stop_time)
+            
+            if reset_time:
+                # Shift time to start at 0
+                cut_segment = cut_segment.time_shift(-start_time)
+            
+            # Add epoch-specific annotations
+            cut_segment.annotate(
+                epoch_index=i,
+                epoch_name=epoch.name,
+                original_start_time=start_time,
+                epoch_duration=duration
+            )
+            
+            # Copy trial-related annotations if they exist
+            if hasattr(epoch, 'labels') and epoch.labels is not None and i < len(epoch.labels):
+                cut_segment.annotate(epoch_label=epoch.labels[i])
+            
+            cut_segments.append(cut_segment)
+            
+        except Exception as e:
+            print(f"Warning: Could not cut segment {i}: {e}")
+            continue
+    
+    return cut_segments
 
 
 def _check_snr(st, seg, seg_id):
