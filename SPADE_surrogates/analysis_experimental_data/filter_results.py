@@ -43,7 +43,7 @@ def main():
     output_path = f'../../results/experimental_data/{surr_method}/{session_name}/{context}/filtered_res.npy'
     
     # Process the results using shared utility functions
-    process_spade_results(directory, annotations_path, output_path)
+    filter_spade_results(directory, annotations_path, output_path)
     
     print('Experimental data analysis completed successfully!')
 
