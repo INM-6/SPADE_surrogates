@@ -43,3 +43,5 @@ seed : 0
 SNR_thresh : 2.5
 # size for removal of synchrofacts from data
 synchsize : 2
+ # Number of MPI ranks for reproducible SPADE analysis
+mpi_ranks: 24

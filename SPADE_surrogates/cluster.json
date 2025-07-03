@@ -1,0 +1,34 @@
+{
+  "__default__": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "02:00:00",
+    "mem": "4G",
+    "partition": "blaustein",
+    "jobname": "spade_{rule}"
+  },
+  "create_parameter_dict": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "00:30:00",
+    "mem": "8G",
+    "partition": "blaustein",
+    "jobname": "spade_params"
+  },
+  "analyze_data": {
+    "ntasks": 24,
+    "cpus_per_task": 1,
+    "time": "06:00:00",
+    "mem": "32G",
+    "partition": "blaustein",
+    "jobname": "spade_analysis_{wildcards.job_id}"
+  },
+  "filter_results": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "01:00:00",
+    "mem": "16G",
+    "partition": "blaustein",
+    "jobname": "spade_filter_{wildcards.session}_{wildcards.context}"
+  }
+}
