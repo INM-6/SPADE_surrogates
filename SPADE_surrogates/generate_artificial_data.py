@@ -1,12 +1,12 @@
 """
-Script for creating artificial data that mimics experimental data features.
+Improved script for creating artificial data that mimics experimental data features.
 
 This script generates artificial spike trains using Poisson processes with refractory 
 periods and Gamma processes, based on statistics estimated from real experimental data.
 """
 
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Dict, Any
 
 import numpy as np
 import quantities as pq
@@ -630,6 +630,179 @@ def main():
                     np.save(cv2_path, cv2_values)
                 
                 print(f'Completed: {session} {epoch} {trialtype}')
+
+
+# Module-level functions for backward compatibility and external access
+def estimate_rate_deadtime(spiketrain, max_refractory, sep, 
+                          sampling_period=0.1 * pq.ms,
+                          sigma=100 * pq.ms,
+                          trial_length=500 * pq.ms):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    Function estimating rate, refractory period and cv, given one spiketrain
+    
+    Parameters
+    ----------
+    spiketrain : neo.SpikeTrain
+        spiketrain from which rate, refractory period and cv are estimated
+    max_refractory : pq.Quantity
+        maximal refractory period allowed
+    sep : pq.Quantity
+        buffer in between trials in the concatenated data (typically is equal
+        to 2 * binsize * winlen)
+    sampling_period : pq.Quantity
+        sampling period of the firing rate (optional)
+    sigma : pq.Quantity
+        sd of the gaussian kernel for rate estimation (optional)
+    trial_length : pq.Quantity
+        duration of each trial
+        
+    Returns
+    -------
+    rate: neo.AnalogSignal
+        rate of the spiketrain
+    refractory_period: pq.Quantity
+        refractory period of the spiketrain (minimal isi)
+    rate_list: list
+        list of rate profiles for all trials
+    """
+    generator = ArtificialDataGenerator(
+        max_refractory=max_refractory,
+        sampling_period=sampling_period,
+        sigma=sigma,
+        trial_length=trial_length
+    )
+    return generator.estimate_rate_and_deadtime(spiketrain, sep)
+
+
+def create_st_list(spiketrain, sep, epoch_length=0.5*pq.s):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    The function generates a list of spiketrains from the concatenated data,
+    where each list corresponds to a trial.
+
+    Parameters
+    ----------
+    spiketrain : neo.SpikeTrain
+        spiketrains which are concatenated over trials for a
+        certain epoch.
+    sep: pq.Quantity
+        buffer in between concatenated trials
+    epoch_length: pq.Quantity
+        length of each trial
+        
+    Returns
+    -------
+    spiketrain_list : list of neo.SpikeTrain
+        List of spiketrains, where each spiketrain corresponds
+        to one trial of a certain epoch.
+    """
+    generator = ArtificialDataGenerator(trial_length=epoch_length)
+    return generator._create_trial_list(spiketrain, sep)
+
+
+def estimate_deadtime(spiketrain, max_dead_time):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    Function to calculate the dead time of one spike train.
+
+    Parameters
+    ----------
+    spiketrain : neo.SpikeTrain
+        spiketrain from which rate, refractory period and cv are estimated
+    max_dead_time : pq.Quantity
+        maximal refractory period allowed
+
+    Returns
+    -------
+    dead_time: pq.Quantity
+        refractory period of the spiketrain (minimal isi)
+    """
+    generator = ArtificialDataGenerator(max_refractory=max_dead_time)
+    return generator._estimate_deadtime(spiketrain)
+
+
+def get_cv2(spiketrain, sep):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    calculates the cv2 of a spiketrain
+
+    Parameters
+    ----------
+    spiketrain: neo.SpikeTrain
+        single neuron concatenate spike train
+    sep: pq.Quantity
+
+    Returns
+    -------
+    cv2 : float
+        The CV2 or 1. if not enough spikes are in the spiketrain.
+    """
+    generator = ArtificialDataGenerator()
+    return generator.calculate_cv2(spiketrain, sep)
+
+
+# Additional utility functions that might be useful
+def get_cv_operational_time(spiketrain, rate_list, sep):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    calculates cv of spike train in operational time
+
+    Parameters
+    ----------
+    spiketrain : neo.SpikeTrain
+        Input spike train
+    rate_list : List[neo.AnalogSignal]
+        List of rate profiles for each trial
+    sep : pq.Quantity
+        Buffer between trials
+
+    Returns
+    -------
+    cv : float
+        CV in operational time
+    """
+    generator = ArtificialDataGenerator()
+    return generator.calculate_cv_operational_time(spiketrain, rate_list, sep)
+
+
+def generate_artificial_data(data, seed, max_refractory, processes, sep):
+    """
+    Legacy function wrapper for backward compatibility.
+    
+    Generate data as Poisson with refractory period and Gamma
+    
+    Parameters
+    ----------
+    data: list
+        list of spiketrains
+    seed: int
+        seed for the data generation
+    max_refractory: quantity
+        maximal refractory period
+    processes: list
+        processes to be generated
+    sep: pq.Quantity
+        buffering between two trials
+
+    Returns
+    -------
+    ppd_spiketrains: list
+        list of poisson processes (neo.SpikeTrain) with rate profile and
+        refractory period estimated from data
+    gamma_spiketrains: list
+        list of gamma processes (neo.SpikeTrain) with rate profile and
+        shape (cv) estimated from data
+    cv_list : list
+        list of cvs, estimated from data, one for each neuron
+    """
+    generator = ArtificialDataGenerator(max_refractory=max_refractory)
+    return generator.generate_artificial_data(data, processes, sep, seed)
 
 
 if __name__ == '__main__':
