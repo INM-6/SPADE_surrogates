@@ -1,99 +1,443 @@
 # -*- coding: utf-8 -*-
 """
-Utility functions for Reach-to-Grasp data.
+Utility functions for Reach-to-Grasp data using NIX format.
+Updated to use the NIX files from datasets_nix directory instead of original Blackrock files.
 """
 import os
-import sys
+import copy
 
 import numpy as np
 import quantities as pq
-
-# sys.path.insert(0, '../data/multielectrode_grasp/code/python-neo')
-sys.path.insert(0, '../data/multielectrode_grasp/code/python-odml')
 import neo
 
-sys.path.insert(0, '../data/multielectrode_grasp/code/reachgraspio')
-import reachgraspio as rgio
 
-# sys.path.insert(0, '../data/multielectrode_grasp/code')
-# from neo_utils import add_epoch, cut_segment_by_epoch, get_events
+# ==========================================================================
+# Neo utility functions for epoch processing
+# ==========================================================================
+
+def _get_from_list(obj_list, prop=None):
+    """
+    Helper function to filter objects from a list based on properties.
+    """
+    if prop is None:
+        return obj_list
+    
+    output = []
+    for obj in obj_list:
+        valid = True
+        for key, value in prop.items():
+            obj_value = None
+            
+            # First check if it's an attribute
+            if hasattr(obj, key):
+                obj_value = getattr(obj, key)
+            # Then check if it's in annotations
+            elif hasattr(obj, 'annotations') and key in obj.annotations:
+                obj_value = obj.annotations[key]
+            else:
+                valid = False
+                break
+            
+            # Handle different types of value matching
+            if isinstance(value, list):
+                if isinstance(obj_value, list):
+                    # Check if any values match
+                    if not any(v in obj_value for v in value):
+                        valid = False
+                        break
+                else:
+                    # Check if single value is in the list
+                    if obj_value not in value:
+                        valid = False
+                        break
+            else:
+                if isinstance(obj_value, list):
+                    # Check if value is in the object's list
+                    if value not in obj_value:
+                        valid = False
+                        break
+                else:
+                    # Direct comparison
+                    if obj_value != value:
+                        valid = False
+                        break
+        
+        if valid:
+            output.append(obj)
+    
+    return output
+
+
+def get_events(container, properties=None):
+    """
+    This function returns a list of Neo Event objects, corresponding to given
+    key-value pairs in the attributes or annotations of the Event.
+
+    Parameter:
+    ---------
+    container: neo.Block or neo.Segment
+        The Neo Block or Segment object to extract data from.
+    properties: dictionary
+        A dictionary that contains the Event keys and values to filter for.
+        Each key of the dictionary is matched to a attribute or an an
+        annotation of Event. The value of each dictionary entry corresponds to
+        a valid entry or a list of valid entries of the attribute or
+        annotation.
+
+        If the value belonging to the key is a list of entries of the same
+        length as the number of events in the Event object, the list entries
+        are matched to the events in the Event object. The resulting Event
+        object contains only those events where the values match up.
+
+        Otherwise, the value is compared to the attributes or annotation of the
+        Event object as such, and depending on the comparison, either the
+        complete Event object is returned or not.
+
+        If None or an empty dictionary is passed, all Event Objects will be
+        returned in a list.
+
+    Returns:
+    --------
+    events: list
+        A list of Event objects matching the given criteria.
+    """
+    if isinstance(container, neo.Segment):
+        return _get_from_list(container.events, prop=properties)
+
+    elif isinstance(container, neo.Block):
+        event_lst = []
+        for seg in container.segments:
+            event_lst += _get_from_list(seg.events, prop=properties)
+        return event_lst
+    else:
+        raise TypeError(
+            'Container needs to be of type neo.Block or neo.Segment, not %s '
+            'in order to extract Events.' % (type(container)))
+
+
+def add_epoch(
+        segment, event1, event2=None, pre=0 * pq.s, post=0 * pq.s,
+        attach_result=True, **kwargs):
+    """
+    Create epochs around a single event, or between pairs of events. Starting
+    and end time of the epoch can be modified using pre and post as offsets
+    before the and after the event(s). Additional keywords will be directly
+    forwarded to the epoch intialization.
+
+    Parameters:
+    -----------
+    segment : neo.Segment
+        The segment in which the final Epoch object is added.
+    event1 : neo.Event
+        The Neo Event objects containing the start events of the epochs. If no
+        event2 is specified, these event1 also specifies the stop events, i.e.,
+        the epoch is cut around event1 times.
+    event2: neo.Event
+        The Neo Event objects containing the stop events of the epochs. If no
+        event2 is specified, event1 specifies the stop events, i.e., the epoch
+        is cut around event1 times. The number of events in event2 must match
+        that of event1.
+    pre, post: Quantity (time)
+        Time offsets to modify the start (pre) and end (post) of the resulting
+        epoch. Example: pre=-10*ms and post=+25*ms will cut from 10 ms before
+        event1 times to 25 ms after event2 times
+    attach_result: bool
+        If True, the resulting Neo Epoch object is added to segment.
+
+    Keyword Arguments:
+    ------------------
+    Passed to the Neo Epoch object.
+
+    Returns:
+    --------
+    epoch: neo.Epoch
+        An Epoch object with the calculated epochs (one per entry in event1).
+    """
+    if event2 is None:
+        event2 = event1
+
+    if not isinstance(segment, neo.Segment):
+        raise TypeError(
+            'Segment has to be of type neo.Segment, not %s' % type(segment))
+
+    for event in [event1, event2]:
+        if not isinstance(event, neo.Event):
+            raise TypeError(
+                'Events have to be of type neo.Event, not %s' % type(event))
+
+    if len(event1) != len(event2):
+        raise ValueError(
+            'event1 and event2 have to have the same number of entries in '
+            'order to create epochs between pairs of entries. Match your '
+            'events before generating epochs. Current event lengths '
+            'are %i and %i' % (len(event1), len(event2)))
+
+    times = event1.times + pre
+    durations = event2.times + post - times
+
+    if any(durations < 0):
+        raise ValueError(
+            'Can not create epoch with negative duration. '
+            'Requested durations %s.' % durations)
+    elif any(durations == 0):
+        raise ValueError('Can not create epoch with zero duration.')
+
+    if 'name' not in kwargs:
+        kwargs['name'] = 'epoch'
+    if 'labels' not in kwargs:
+        kwargs['labels'] = [
+            '%s_%i' % (kwargs['name'], i) for i in range(len(times))]
+
+    ep = neo.Epoch(times=times, durations=durations, **kwargs)
+
+    ep.annotations.update(event1.annotations)
+
+    if attach_result:
+        segment.epochs.append(ep)
+        # Note: create_relationship() might not exist in newer Neo versions
+        if hasattr(segment, 'create_relationship'):
+            segment.create_relationship()
+
+    return ep
+
+
+def seg_time_slice(segment, t_start, t_stop, reset_time=False):
+    """
+    Helper function to slice a segment in time.
+    This replaces the original seg_time_slice function from neo_utils.
+    """
+    # Create new segment
+    new_seg = neo.Segment(name=segment.name + '_slice')
+    new_seg.annotations.update(segment.annotations)
+    
+    # Slice spike trains
+    for st in segment.spiketrains:
+        # Find spikes within time window
+        mask = (st >= t_start) & (st < t_stop)
+        
+        if np.any(mask):
+            # Extract spikes in window
+            spike_times = st[mask]
+            
+            # Reset time if requested
+            if reset_time:
+                spike_times = spike_times - t_start
+                new_t_start = 0 * st.units
+                new_t_stop = (t_stop - t_start).rescale(st.units)
+            else:
+                new_t_start = t_start.rescale(st.units)
+                new_t_stop = t_stop.rescale(st.units)
+        else:
+            # No spikes in window
+            spike_times = [] * st.units
+            if reset_time:
+                new_t_start = 0 * st.units
+                new_t_stop = (t_stop - t_start).rescale(st.units)
+            else:
+                new_t_start = t_start.rescale(st.units)
+                new_t_stop = t_stop.rescale(st.units)
+        
+        # Create new spike train
+        new_st = neo.SpikeTrain(
+            spike_times,
+            t_start=new_t_start,
+            t_stop=new_t_stop,
+            units=st.units
+        )
+        
+        # Copy annotations and waveforms
+        new_st.annotations.update(st.annotations)
+        if hasattr(st, 'waveforms') and st.waveforms is not None:
+            if np.any(mask):
+                new_st.waveforms = st.waveforms[mask]
+            new_st.sampling_rate = getattr(st, 'sampling_rate', None)
+        
+        new_seg.spiketrains.append(new_st)
+    
+    # Slice analog signals if present
+    for asig in segment.analogsignals:
+        # Calculate sample indices
+        start_idx = int((t_start - asig.t_start) * asig.sampling_rate)
+        stop_idx = int((t_stop - asig.t_start) * asig.sampling_rate)
+        
+        # Ensure indices are within bounds
+        start_idx = max(0, start_idx)
+        stop_idx = min(len(asig), stop_idx)
+        
+        if start_idx < stop_idx:
+            # Extract signal slice
+            new_signal = asig[start_idx:stop_idx]
+            
+            # Reset time if requested
+            if reset_time:
+                new_signal.t_start = 0 * asig.units
+            else:
+                new_signal.t_start = t_start
+            
+            new_signal.annotations.update(asig.annotations)
+            new_seg.analogsignals.append(new_signal)
+    
+    return new_seg
+
+
+def cut_segment_by_epoch(seg, epoch, reset_time=False):
+    """
+    Cuts a Neo Segment according to a neo Epoch object
+
+    The function returns a list of neo Segments, where each segment corresponds
+    to an epoch in the neo Epoch object and contains the data of the original
+    Segment cut to that particular Epoch.
+
+    The resulting segments may either retain their original time stamps,
+    or can be shifted to a common time axis.
+
+    Parameters
+    ----------
+    seg: Neo Segment
+        The Segment containing the original uncut data.
+    epoch: Neo Epoch
+        For each epoch in this input, one segment is generated according to
+         the epoch time and duration.
+    reset_time: bool
+        If True the times stamps of all sliced objects are set to fall
+        in the range from 0 to the duration of the epoch duration.
+        If False, original time stamps are retained.
+        Default is False.
+
+    Returns:
+    --------
+    segments: list of Neo Segments
+        Per epoch in the input, a neo.Segment with AnalogSignal and/or
+        SpikeTrain Objects will be generated and returned. Each Segment will
+        receive the annotations of the corresponding epoch in the input.
+    """
+    
+    if not isinstance(seg, neo.Segment):
+        raise TypeError(
+            'Seg needs to be of type neo.Segment, not %s' % type(seg))
+
+    # Check if segment has a parent block (may not be required in newer Neo)
+    if hasattr(seg, 'parents') and seg.parents and type(seg.parents[0]) != neo.Block:
+        raise ValueError(
+            'Segment has no block as parent. Can not cut segment.')
+
+    if not isinstance(epoch, neo.Epoch):
+        raise TypeError(
+            'Epoch needs to be of type neo.Epoch, not %s' % type(epoch))
+
+    segments = []
+    for ep_id in range(len(epoch)):
+        subseg = seg_time_slice(seg,
+                                epoch.times[ep_id],
+                                epoch.times[ep_id] + epoch.durations[ep_id],
+                                reset_time=reset_time)
+        
+        # Add annotations of Epoch
+        for a in epoch.annotations:
+            if type(epoch.annotations[a]) is list \
+                    and len(epoch.annotations[a]) == len(epoch):
+                subseg.annotations[a] = copy.copy(epoch.annotations[a][ep_id])
+            else:
+                subseg.annotations[a] = copy.copy(epoch.annotations[a])
+        
+        # Add additional annotations for trial identification
+        subseg.annotations['epoch_id'] = ep_id
+        if hasattr(epoch, 'labels') and ep_id < len(epoch.labels):
+            subseg.annotations['epoch_label'] = epoch.labels[ep_id]
+        
+        segments.append(subseg)
+
+    return segments
+
+
+# ==========================================================================
+# NIX file loading and path functions
+# ==========================================================================
 
 
 def data_path(session):
     """
-    Finds the path associated to a given session.
+    Finds the path associated to a given session for NIX files.
 
     Parameters
     ----------
-    session : str or ReachGraspIO object
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
+    session : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
 
     Returns
     -------
     path : str
-        the path of the given session
-
+        The path to the datasets_nix directory
     """
-    if isinstance(session, str):
-        path = '../data/multielectrode_grasp/datasets/'
-    elif isinstance(session, rgio.ReachGraspIO):
-        fullpath = session.filename
-        path = ''
-        for s in fullpath.split('/')[:-1]:
-            path = path + s + '/'
+    path = '../data/multielectrode_grasp/datasets_nix/'
     path = os.path.abspath(path) + '/'
     return path
 
 
-def odml_path(session):
+def get_nix_filename(session_name, include_raw=False):
     """
-    Finds the path of the odml file associated to a given session.
-
+    Get the appropriate NIX filename for a session.
+    
     Parameters
     ----------
-    session : str or ReachGraspIO object
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
-
-    Returns
-    -------
-    path : str
-        the path of the given session odml
-
-    """
-    if isinstance(session, str):
-        path = '../data/multielectrode_grasp/datasets/'
-    return path
-
-
-def _session(session_name):
-    """
-    Wrapper to load a ReachGraspIO session if input is a str, and do nothing
-    if input is already a ReachGraspIO object.
-    Returns the session and its associated filename.
-
-    Parameters:
-    -----------
-    session : str of session loaded with ReachGraspIO
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
-
-    Returns
-    -------
-    session : ReachGraspIO
     session_name : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
+    include_raw : bool, optional
+        Whether to include raw 30kHz data. If False, uses the lighter '_no_raw' version.
+        Default: False
+        
+    Returns
+    -------
+    filename : str
+        The full path to the NIX file
     """
-    path = data_path(session_name)
-    path_odml = odml_path(session_name)
-    session = rgio.ReachGraspIO(path + session_name, odml_directory=path_odml)
-    return session
+    base_path = data_path(session_name)
+    
+    if include_raw:
+        filename = f"{session_name}.nix"
+    else:
+        filename = f"{session_name}_no_raw.nix"
+    
+    return os.path.join(base_path, filename)
+
+
+def load_session_nix(session_name, include_raw=False):
+    """
+    Load a session from NIX format files.
+    
+    Parameters
+    ----------
+    session_name : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
+    include_raw : bool, optional
+        Whether to include raw 30kHz data. If False, uses the lighter '_no_raw' version.
+        Default: False
+        
+    Returns
+    -------
+    block : neo.Block
+        The loaded data block with full annotations
+    """
+    nix_filename = get_nix_filename(session_name, include_raw=include_raw)
+    
+    if not os.path.exists(nix_filename):
+        raise FileNotFoundError(f"NIX file not found: {nix_filename}")
+    
+    with neo.NixIO(nix_filename, mode='ro') as io:
+        block = io.read_block()
+    
+    return block
+
+
+# ==========================================================================
+# Spike train utility functions
+# ==========================================================================
 
 
 def st_id(spiketrain):
     """
-    associates to a Lilou's SpikeTrain st an unique ID, given by the float
-    100* electrode_id + unit_id.
+    Associates to a SpikeTrain an unique ID, given by the float
+    100 * electrode_id + unit_id.
     E.g.: electrode_id = 7, unit_id = 1 -> st_id = 701
     """
     return spiketrain.annotations['channel_id'] * 100 + 1 * \
@@ -118,61 +462,61 @@ def shift_spiketrain(spiketrain, t):
 
 def SNR_kelly(spiketrain):
     """
-    returns the SNR of the waveforms of spiketrains, as computed in
+    Returns the SNR of the waveforms of spiketrains, as computed in
     Kelly et al (2007):
     * compute the mean waveform
-    * define the signal as the peak-to-through of such mean waveform
+    * define the signal as the peak-to-trough of such mean waveform
     * define the noise as double the std.dev. of the values of all waveforms,
       each normalised by subtracting the mean waveform
 
     Parameters:
     -----------
     spiketrain : SpikeTrain
-        spike train loaded with rgio (has attribute "vaweforms")
+        spike train with waveforms attribute
 
     Returns:
     --------
     snr: float
         The SNR of the input spike train
     """
+    if spiketrain.waveforms is None:
+        return 0.0
+        
     mean_waveform = spiketrain.waveforms.mean(axis=0)
     signal = mean_waveform.max() - mean_waveform.min()
     SD = (spiketrain.waveforms - mean_waveform).std()
     return signal / (2. * SD)
 
 
-def calc_spiketrains_SNR(session, units='all'):
+def calc_spiketrains_SNR(session_name, units='all', include_raw=False):
     """
     Calculates the signal-to-noise ratio (SNR) of each SpikeTrain in the
-    specified session.
+    specified session loaded from NIX format.
 
     Parameters:
     -----------
-    session : str of session loaded with ReachGraspIO
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
+    session_name : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
     units : str
         which type of units to consider:
         * 'all': returns the SNR values of all units in the session
         * 'sua': returns SUAs' SNR values only
-        * 'mua': returns MIAs' SNR values only
+        * 'mua': returns MUAs' SNR values only
+    include_raw : bool, optional
+        Whether to load raw data. Default: False
 
     Returns:
     --------
     SNRdict : dict
         a dictionary of unit ids and associated SNR values
     """
-    session = _session(session)
-
-    block = session.read_block(
-        channel_list=list(range(1, 97)), nsx=[2], units=[],
-        waveforms=True)
+    block = load_session_nix(session_name, include_raw=include_raw)
 
     sts = [st for st in block.segments[0].spiketrains]
     if units == 'sua':
-        sts = [st for st in sts if st.annotations['sua']]
+        sts = [st for st in sts if st.annotations.get('sua', False)]
     elif units == 'mua':
-        sts = [st for st in sts if st.annotations['mua']]
+        sts = [st for st in sts if st.annotations.get('mua', False)]
 
     SNRdict = {}
     for st in sts:
@@ -183,65 +527,54 @@ def calc_spiketrains_SNR(session, units='all'):
 
 
 # ==========================================================================
-# Loading routines:
-# load_session(): loads spike trains from a full session
-# load_epoch_as_list(): load spike trains from an epoch; for each SUA, a list
-# load_epoch_concatenated_trials(): load concat'd spike trains from an epoch
+# Main loading routines for NIX format
 # ==========================================================================
 
 
 def load_session_sts(
         session_name, units='sua', SNRthresh=0, synchsize=0, dt=None,
-        dt2=None, verbose=False):
+        dt2=None, include_raw=False, verbose=False):
     """
-    Load SUA spike trains of a full specific session from Lilou's data.
+    Load SUA spike trains of a full specific session from NIX files.
 
     Parameters:
     -----------
-    session_name : str of session loaded with ReachGraspIO
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
+    session_name : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
+    units : str, optional
+        Type of units to load: 'sua', 'mua', or 'all'. Default: 'sua'
     SNRthresh: float, optional
-        lower threshold for the waveforms' SNR of SUAs to be considered.
-        SUAs with a lower or equal SNR are not loaded.
+        Lower threshold for the waveforms' SNR of SUAs to be considered.
         Default: 0
     synchsize: int, optional
-        minimum size of synchronous events to be removed from the data.
-        If 0, no synchronous events are removed.
-        Synchrony is defined by the parameter dt.
+        Minimum size of synchronous events to be removed from the data.
+        If 0, no synchronous events are removed. Default: 0
     dt: Quantity, optional
-        time lag within which synchronous spikes are considered highly
-        synchronous ("synchrofacts"). If None, the sampling period of the
-        recording system (1 * session.nev_unit) is used.
-        Default: None
+        Time lag for synchrony detection. Default: None
     dt2: Quantity, optional
-        isolated spikes falling within a time lag dt2 from synchrofacts (see
-        parameter dt) to be removed (see parameter synchsize) are also
-        removed. If None, the sampling period of the recording system
-        (1 * session.nev_unit) is used.
-        Default: None
+        Time lag for removing spikes near synchronous events. Default: None
+    include_raw : bool, optional
+        Whether to load raw data. Default: False
+    verbose : bool, optional
+        Whether to print progress information. Default: False
 
     Returns:
     --------
-    data : list of SpikeTrain
-        a list of all SpikeTrains in the session
+    sts : list of SpikeTrain
+        A list of all SpikeTrains in the session
     """
-    # Load session, and create block depending on the trigger
-    session = _session(session_name)
-
     if verbose:
-        print(('Load data (session: %s)...' % session_name))
+        print(f'Load data (session: {session_name}) from NIX format...')
 
-    block = session.read_block(channels=list(range(1, 97)), nsx_to_load=None,
-                               units='all', load_waveforms=False)
-
+    block = load_session_nix(session_name, include_raw=include_raw)
     sts = list(block.segments[0].spiketrains)
 
     if units == 'sua':
-        sts = [st for st in sts if st.annotations['sua']]
+        sts = [st for st in sts if st.annotations.get('sua', False)]
     elif units == 'mua':
-        sts = [st for st in sts if st.annotations['mua']]
+        sts = [st for st in sts if st.annotations.get('mua', False)]
 
+    # Remove synchronous events if requested
     if not (synchsize == 0 or synchsize is None):
         time_unit = sts[0].units
         Dt = time_unit if dt is None else dt
@@ -265,33 +598,26 @@ def load_session_sts(
     if SNRthresh > 0:
         if verbose:
             print('  > remove low-SNR SpikeTrains...')
+        # Calculate SNR for spike trains that don't have it
+        for st in sts:
+            if 'SNR' not in st.annotations:
+                st.annotations['SNR'] = SNR_kelly(st)
         sts = [st for st in sts if st.annotations['SNR'] > SNRthresh]
 
     return sts
 
 
-def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0, verbose=False):
+# ==========================================================================
+# Synchrony detection and removal functions
+# ==========================================================================
+
+
+def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0,
+                        include_raw=False, verbose=False):
     """
-    Load SUA spike trains of specific session and epoch from Lilou's data.
+    Load SUA spike trains of specific session and epoch from NIX files.
 
-    * The output is a dictionary, with SUA ids as keys.
-    * Each SUA id is associated to a list of spike trains, one per trial.
-    * Each SpikeTrain is aligned to the epoch's trigger (see below) and has
-      annotations indicating the corresponding trial type and much more.
-
-    The epoch is either one of 6 specific epochs defined, following a
-    discussion with Sonja, Alexa, Thomas, as 500 ms-long time segments
-    each around a specific trigger, or a triplet consisting of a trigger
-    and two time spans delimiting a time segment around the trigger.
-    Additionally allows to select only one or more trialtypes, to consider
-    SUAs with a minimum waveforms' signal-to-noise ratio, to remove
-    synchronous spiking events of a certain minimum size (defined at a given
-    time scale).
-    The spike trains can be centered at the trigger associated to the epoch,
-    or at the left or right end of the corresponding time segment.
-
-    The pre-defined epochs, the associated triggers, and the time spans
-    t_pre and t_post (before and after the trigger, respectively) are:
+    The epoch definitions remain the same as in the original code:
     * epoch='start'     :  trigger='TS-ON'   t_pre=250 ms   t_post=250 ms
     * epoch='cue1'      :  trigger='CUE-ON'  t_pre=250 ms   t_post=250 ms
     * epoch='earlydelay':  trigger='CUE-OFF' t_pre=0 ms     t_post=500 ms
@@ -302,38 +628,23 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0, verbo
     Parameters:
     -----------
     session_name : str
-        Name of a recording subsession. E.g: 'l101126-002'
-    epoch : str or triplet
-        if str, defines a trigger and a time segment around it (see above).
-        if a triplet (tuple with 3 elements), its elements are, in order:
-        * trigger [str] : a trigger (any string in session.trial_events)
-        * t_pre [Quantity] : the left end of the time segment around the
-          trigger. (> 0 for times before the trigger, < 0 for time after it)
-        * t_post [Quantity] : the right end of the time segment around the
-          trigger. (> 0 for times after the trigger, < 0 for time before it)
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
+    epoch : str or tuple
+        Epoch specification (same as original)
     trialtypes : str, optional
-        One trial type, among those present in the session.
-        8 Classical trial types for Lilou's sessions are:
-        'SGHF', 'SGLF', 'PGHF', 'PGLF', 'HFSG', 'LFSG', 'HFPG', 'LFPG'.
-        trialtypes can be one of such strings, or None.
-        If None, all trial types in the session are considered.
-        Default: None
+        Trial type to consider. Default: None
     SNRthresh : float, optional
-        Lower threshold for the waveforms' SNR of SUAs to be considered.
-        SUAs with a lower or equal SNR are not loaded.
-        Default: 0
+        SNR threshold. Default: 0
+    include_raw : bool, optional
+        Whether to load raw data. Default: False
     verbose : bool, optional
-        Whether to print information as different steps are run
+        Whether to print progress information. Default: False
 
     Returns:
     --------
     data : dict
-        A dictionary having SUA IDs as keys and lists of SpikeTrains as 
-        corresponding values. Each SpikeTrain corresponds to the SUA spikes 
-        in one trial (having the specified trial type(s)), during the 
-        specified epoch.
+        Dictionary with SUA IDs as keys and lists of SpikeTrains as values
     """
-    
     # Define trigger, t_pre, t_post depending on epoch
     if epoch == 'start':
         trigger, t_pre, t_post = 'TS-ON', -250 * pq.ms, 250 * pq.ms
@@ -354,82 +665,93 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0, verbo
     else:
         raise ValueError('epoch must be either a string or a tuple of len 3')
 
-    # Load session, and create block depending on the trigger
-    session = _session(session_name)
     if verbose:
-        print(('Load data (session: %s, epoch: %s, trialtype: %s)...' % (
-            session_name, epoch, trialtypes)))
-        print("  > load session %s, and define Block around trigger '%s'..." %
-              (session_name, trigger))
+        print(f'Load data (session: {session_name}, epoch: {epoch}, '
+              f'trialtype: {trialtypes}) from NIX format...')
+        print(f"  > load session {session_name}, and define Block around "
+              f"trigger '{trigger}'...")
 
-    # Read block with all data
-    block = session.read_block(
-        nsx_to_load=None,
-        n_starts=None,
-        n_stops=None,
-        channels=list(range(1, 97)),
-        units='all',
-        load_events=True,
-        load_waveforms=False,
-        scaling='raw'
-    )
-
+    # Load session from NIX file
+    block = load_session_nix(session_name, include_raw=include_raw)
     data_segment = block.segments[0]
-    
-    # Find events with the specified trigger using modern Neo filter method
-    start_events = _get_events_by_properties(
+
+    # Get performance codes - try to find them in block annotations or use defaults
+    if hasattr(block, 'annotations') and 'performance_codes' in block.annotations:
+        performance_codes = block.annotations['performance_codes']
+        correct_trial_code = performance_codes.get('correct_trial', 255)
+    else:
+        # Default performance code for correct trials
+        correct_trial_code = 255
+
+    # Find events matching the trigger and correct performance
+    start_events = get_events(
         data_segment,
         properties={
             'trial_event_labels': trigger,
-            'performance_in_trial': session.performance_codes['correct_trial']
-        }
-    )
+            'performance_in_trial': correct_trial_code
+        })
     
     if not start_events:
-        if verbose:
-            print(f"No events found for trigger '{trigger}'")
-        return {}
+        # Try without performance filter
+        start_events = get_events(
+            data_segment,
+            properties={'trial_event_labels': trigger})
+    
+    if not start_events:
+        raise ValueError(f"No events found for trigger '{trigger}'")
     
     start_event = start_events[0]
-    
-    # Create epochs around the events using modern Neo approach
-    epoch_obj = _create_epoch_from_events(
+
+    # Create epoch around the trigger
+    epoch_obj = add_epoch(
         data_segment,
-        start_event,
-        t_pre=t_pre,
-        t_post=t_post,
-        name=str(epoch)
-    )
+        event1=start_event, 
+        event2=None,
+        pre=t_pre, 
+        post=t_post,
+        attach_result=False,
+        name='{}'.format(epoch))
     
-    # Cut segments by epoch using modern Neo time slicing
-    cut_trial_segments = _cut_segment_by_epoch_modern(
-        data_segment, 
-        epoch_obj, 
-        reset_time=True
-    )
+    # Cut the segment by epoch
+    cut_trial_block = neo.Block(name="Cut_Trials")
+    cut_trial_block.segments = cut_segment_by_epoch(
+        data_segment, epoch_obj, reset_time=True)
     
-    # Filter segments by trial type using modern Neo filter
+    # Filter segments by trial type if specified
     if trialtypes is not None:
-        selected_trial_segments = [
-            seg for seg in cut_trial_segments 
-            if seg.annotations.get('belongs_to_trialtype') == trialtypes
-        ]
+        selected_trial_segments = []
+        for seg in cut_trial_block.segments:
+            if hasattr(seg, 'annotations') and seg.annotations.get('belongs_to_trialtype') == trialtypes:
+                selected_trial_segments.append(seg)
     else:
-        selected_trial_segments = cut_trial_segments
+        selected_trial_segments = cut_trial_block.segments
     
-    # Extract spike trains with SNR filtering
+    # Extract spike trains and organize by SUA ID
     data = {}
     for seg_id, seg in enumerate(selected_trial_segments):
-        # Filter spike trains that are SUAs using modern approach
-        sua_spiketrains = [
-            st for st in seg.spiketrains 
-            if st.annotations.get('sua', False)
-        ]
+        # Filter for SUA spike trains
+        sua_spiketrains = [st for st in seg.spiketrains 
+                          if st.annotations.get('sua', False)]
         
         for st in sua_spiketrains:
-            # Check the SNR threshold
-            if st.annotations.get('SNR', 0) > SNRthresh:
-                sua_id = _check_snr(st, seg, seg_id)
+            # Check SNR
+            if 'SNR' not in st.annotations:
+                st.annotations['SNR'] = SNR_kelly(st)
+            
+            if st.annotations['SNR'] > SNRthresh:
+                # Add trial information to annotations
+                st.annotations['trial_id'] = seg.annotations.get('trial_id', seg_id)
+                st.annotations['trial_type'] = seg.annotations.get('belongs_to_trialtype', trialtypes)
+                st.annotations['trial_id_trialtype'] = seg_id
+                st.annotations['epoch'] = epoch
+                st.annotations['trigger'] = trigger
+                st.annotations['t_pre'] = t_pre
+                st.annotations['t_post'] = t_post
+                
+                # Get SUA ID
+                sua_id = st_id(st)
+                
+                # Add to data dictionary
                 if sua_id not in data:
                     data[sua_id] = []
                 data[sua_id].append(st)
@@ -437,109 +759,12 @@ def load_epoch_as_lists(session_name, epoch, trialtypes=None, SNRthresh=0, verbo
     return data
 
 
-def _get_events_by_properties(segment, properties):
-    """
-    Modern replacement for get_events function.
-    Filter events in a segment based on properties.
-    """
-    matching_events = []
-    
-    for event in segment.events:
-        match = True
-        for prop_name, prop_value in properties.items():
-            event_value = event.annotations.get(prop_name)
-            if event_value != prop_value:
-                match = False
-                break
-        
-        if match:
-            matching_events.append(event)
-    
-    return matching_events
-
-
-def _create_epoch_from_events(segment, event, t_pre, t_post, name=None):
-    """
-    Modern replacement for add_epoch function.
-    Create an Epoch object from events with pre and post time offsets.
-    """
-    # Calculate start times and durations
-    start_times = event.times + t_pre
-    durations = (t_post - t_pre) * np.ones(len(event.times))
-    
-    # Create epoch object
-    epoch = neo.Epoch(
-        times=start_times,
-        durations=durations,
-        labels=event.labels if hasattr(event, 'labels') else None,
-        name=name
-    )
-    
-    # Copy relevant annotations
-    for key, value in event.annotations.items():
-        epoch.annotate(**{key: value})
-    
-    return epoch
-
-
-def _cut_segment_by_epoch_modern(segment, epoch, reset_time=True):
-    """
-    Modern replacement for cut_segment_by_epoch function.
-    Cut a segment into multiple segments based on epoch timing using modern Neo.
-    """
-    cut_segments = []
-    
-    for i, (start_time, duration) in enumerate(zip(epoch.times, epoch.durations)):
-        stop_time = start_time + duration
-        
-        # Use modern Neo time_slice method
-        try:
-            cut_segment = segment.time_slice(start_time, stop_time)
-            
-            if reset_time:
-                # Shift time to start at 0
-                cut_segment = cut_segment.time_shift(-start_time)
-            
-            # Add epoch-specific annotations
-            cut_segment.annotate(
-                epoch_index=i,
-                epoch_name=epoch.name,
-                original_start_time=start_time,
-                epoch_duration=duration
-            )
-            
-            # Copy trial-related annotations if they exist
-            if hasattr(epoch, 'labels') and epoch.labels is not None and i < len(epoch.labels):
-                cut_segment.annotate(epoch_label=epoch.labels[i])
-            
-            cut_segments.append(cut_segment)
-            
-        except Exception as e:
-            print(f"Warning: Could not cut segment {i}: {e}")
-            continue
-    
-    return cut_segments
-
-
-def _check_snr(st, seg, seg_id):
-    st.annotations['trial_id'] = seg.annotations[
-        'trial_id']
-    st.annotations['trial_type'] = seg.annotations[
-        'belongs_to_trialtype']
-    st.annotate(trial_id_trialtype=seg_id)
-    el = st.annotations['channel_id']
-    sua = st.annotations['unit_id']
-    sua_id = el * 100 + sua * 1
-    return sua_id
-
-
 def load_epoch_concatenated_trials(
-        session, epoch, trialtypes=None, SNRthresh=0, synchsize=0, dt=None,
-        dt2=None, sep=100 * pq.ms, verbose=False):
+        session_name, epoch, trialtypes=None, SNRthresh=0, synchsize=0, dt=None,
+        dt2=None, sep=100 * pq.ms, include_raw=False, verbose=False):
     """
-    Load a slice of Lilou's spike train data in a specified epoch
-    (corresponding to a trigger and a time segment aroun it), select spike
-    trains corresponding to specific trialtypes only, and concatenate them.
+    Load a slice of spike train data in a specified epoch from NIX files,
+    select spike trains corresponding to specific trialtypes only, and concatenate them.
 
     The epoch is either one of 6 specific epochs defined, following a
     discussion with Sonja, Alexa, Thomas, as 500 ms-long time segments
@@ -548,18 +773,17 @@ def load_epoch_concatenated_trials(
 
     The pre-defined epochs, the associated triggers, and the time spans
     t_pre and t_post (before and after the trigger, respectively) are:
-    * epoch='start'     :  trigger='FP-ON'   t_pre=250 ms   t_post=250 ms
+    * epoch='start'     :  trigger='TS-ON'   t_pre=250 ms   t_post=250 ms
     * epoch='cue1'      :  trigger='CUE-ON'  t_pre=250 ms   t_post=250 ms
-    * epoch='earlydelay':  trigger='FP-ON'   t_pre=0 ms     t_post=500 ms
+    * epoch='earlydelay':  trigger='CUE-OFF' t_pre=0 ms     t_post=500 ms
     * epoch='latedelay' :  trigger='GO-ON'   t_pre=500 ms   t_post=0 ms
     * epoch='movement'  :  trigger='SR'      t_pre=200 ms   t_post=300 ms
-    * epoch='hold'      :  trigger='RW'      t_pre=500 ms   t_post=0 ms
+    * epoch='hold'      :  trigger='RW-ON'   t_pre=500 ms   t_post=0 ms
 
     Parameters:
     -----------
-    session : str of session loaded with ReachGraspIO
-        if a string, the name of a recording subsession. E.g: 'l101126-002'
-        Otherwise, a rg.rgio.ReachGraspIO object.
+    session_name : str
+        The name of a recording session. E.g: 'i140703-001' or 'l101210-001'
     epoch : str or triplet
         if str, defines a trigger and a time segment around it (see above).
         if a triplet (tuple with 3 elements), its elements are, in order:
@@ -596,12 +820,12 @@ def load_epoch_concatenated_trials(
         Default: None
     sep : Quantity
         Time interval used to separate consecutive trials.
+        Default: 100 ms
+    include_raw : bool, optional
+        Whether to load raw data from NIX files. Default: False
     verbose : bool
         Whether to print information as different steps are run
-    firing_rate_threshold: None or float
-        Threshold for excluding neurons with high firing rate
-        Default: None
-
+    
     Returns:
     --------
     data : list
@@ -609,80 +833,120 @@ def load_epoch_concatenated_trials(
         of the desired type(s) and during the specified epoch for that SUA.
     """
     # Load the data as a dictionary of SUA_id: [list of trials]
-    data = load_epoch_as_lists(session, epoch, trialtypes=trialtypes,
-                               SNRthresh=SNRthresh,
+    data = load_epoch_as_lists(session_name, epoch, trialtypes=trialtypes,
+                               SNRthresh=SNRthresh, include_raw=include_raw,
                                verbose=verbose)
 
-    # Check that all spike trains in all lists have same t_start, t_stop
-    t_pre = abs(list(data.values())[0][0].t_start)
-    t_post = abs(list(data.values())[0][0].t_stop)
-    if not all([np.all([abs(st.t_start) == t_pre
-                        for st in st_list])
-                for st_list in list(data.values())]):
-        raise ValueError(
-            'SpikeTrains have not same t_pre; cannot be concatenated')
-    if not all([np.all([abs(st.t_stop) == t_post
-                        for st in st_list])
-                for st_list in list(data.values())]):
-        raise ValueError(
-            'SpikeTrains have not same t_post; cannot be concatenated')
+    if not data:
+        if verbose:
+            print("No data found matching the criteria.")
+        return []
 
-    # Define time unit (nev_unit), trial duration, trial IDs to consider
-    time_unit = list(data.values())[0][0].units
+    # Check that all spike trains in all lists have same t_start, t_stop
+    sample_st_list = list(data.values())[0]
+    if not sample_st_list:
+        if verbose:
+            print("No spike trains found in data.")
+        return []
+    
+    sample_st = sample_st_list[0]
+    t_pre = abs(sample_st.t_start)
+    t_post = abs(sample_st.t_stop)
+    
+    # Validate that all spike trains have consistent timing
+    for sua_id, st_list in data.items():
+        for st in st_list:
+            if abs(abs(st.t_start) - t_pre) > 1e-10 * st.t_start.units:
+                raise ValueError(
+                    f'SpikeTrains have inconsistent t_start; cannot be concatenated. '
+                    f'Expected {t_pre}, got {abs(st.t_start)} for SUA {sua_id}')
+            if abs(abs(st.t_stop) - t_post) > 1e-10 * st.t_stop.units:
+                raise ValueError(
+                    f'SpikeTrains have inconsistent t_stop; cannot be concatenated. '
+                    f'Expected {t_post}, got {abs(st.t_stop)} for SUA {sua_id}')
+
+    # Define time unit, trial duration, trial IDs to consider
+    time_unit = sample_st.units
     trial_duration = (t_post + t_pre + sep).rescale(time_unit)
-    trial_ids_of_chosen_types = np.unique(np.hstack([
-        [st.annotations['trial_id_trialtype'] for st in st_list]
-        for st_list in list(data.values())]))
+    
+    # Get all unique trial IDs from the data
+    all_trial_ids = set()
+    for st_list in data.values():
+        for st in st_list:
+            all_trial_ids.add(st.annotations['trial_id_trialtype'])
+    
+    trial_ids_of_chosen_types = sorted(list(all_trial_ids))
 
     # Concatenate the lists of spike trains into a single SpikeTrain
     if verbose:
         print('  > concatenate trials...')
+    
     conc_data = []
     for sua_id in sorted(data.keys()):
         trials_to_concatenate = []
         original_times = []
+        
         # Create list of trials, each shifted by trial_duration*trial_id
         for tr in data[sua_id]:
-            trials_to_concatenate.append(
-                tr.rescale(time_unit).magnitude + (
-                    (trial_duration * tr.annotations[
-                        'trial_id_trialtype']).rescale(time_unit)).magnitude)
+            trial_offset = (trial_duration * tr.annotations['trial_id_trialtype']).rescale(time_unit)
+            shifted_times = tr.rescale(time_unit).magnitude + trial_offset.magnitude
+            trials_to_concatenate.extend(shifted_times)
             original_times.extend(list(tr.magnitude))
-        # Concatenate the trials (time unit lost!)
+        
+        # Sort the concatenated spike times
         if len(trials_to_concatenate) > 0:
-            trials_to_concatenate = np.hstack(trials_to_concatenate)
+            trials_to_concatenate = np.sort(trials_to_concatenate)
 
         # Re-transform the concatenated spikes into a SpikeTrain
+        total_duration = trial_duration * (max(trial_ids_of_chosen_types) + 1)
         st = neo.SpikeTrain(
             trials_to_concatenate * time_unit,
-            t_stop=trial_duration * max(trial_ids_of_chosen_types)
-            + trial_duration).rescale(pq.s)
+            t_start=0 * time_unit,
+            t_stop=total_duration.rescale(time_unit)
+        )
 
-        # Copy into the SpikeTrain the original annotations
-        for key, value in list(data[sua_id][0].annotations.items()):
-            if key != 'trial_id':
-                st.annotations[key] = value
-        st.annotate(original_times=original_times)
+        # Copy annotations from the original spike trains
+        if data[sua_id]:
+            reference_st = data[sua_id][0]
+            for key, value in reference_st.annotations.items():
+                if key not in ['trial_id', 'trial_id_trialtype']:
+                    st.annotations[key] = value
+        
+        # Add concatenation-specific annotations
+        st.annotations['original_times'] = original_times
+        st.annotations['trial_separation'] = sep
+        st.annotations['concatenated'] = True
+        st.annotations['n_trials'] = len(data[sua_id])
+        
         conc_data.append(st)
-    # Remove exactly synchronous spikes from data
+    
+    # Remove exactly synchronous spikes from data if requested
     if not (synchsize == 0 or synchsize is None):
         Dt = time_unit if dt is None else dt
         Dt2 = time_unit if dt2 is None else dt2
         if verbose:
-            sync_spikes_before_removal = len(
-                find_synchrofact_spikes(conc_data, n=synchsize, dt=Dt)[1])
-            print(f'  > remove synchrofacts (precision={Dt}) of'
-                  f' size {synchsize:d}')
-            print(f'    and their neighbours at distance <= {Dt2}...')
-            print(
-                f'    (# synch. spikes before removal: '
-                f'{sync_spikes_before_removal:d})')
+            try:
+                sync_spikes_before_removal = len(
+                    find_synchrofact_spikes(conc_data, n=synchsize, dt=Dt)[1])
+                print(f'  > remove synchrofacts (precision={Dt}) of'
+                      f' size {synchsize:d}')
+                print(f'    and their neighbours at distance <= {Dt2}...')
+                print(
+                    f'    (# synch. spikes before removal: '
+                    f'{sync_spikes_before_removal:d})')
+            except Exception as e:
+                if verbose:
+                    print(f"Warning: Could not count synchronous spikes: {e}")
 
         sts = remove_synchrofact_spikes(conc_data, n=synchsize, dt=Dt, dt2=Dt2)
+        
+        # Restore annotations
         for i, conc_st in enumerate(conc_data):
-            sts[i].annotations = conc_st.annotations
+            if i < len(sts):
+                sts[i].annotations.update(conc_st.annotations)
     else:
         sts = conc_data
+    
     # Return the list of SpikeTrains
     return sts
 
@@ -943,3 +1207,148 @@ def remove_synchrofact_spikes(sts, n=2, dt=0 * pq.ms, dt2=0 * pq.ms):
         sts2.append(st.take(np.where(
             [np.abs(t - times).min() > dt2 for t in st])[0]))
     return sts2
+
+# ==========================================================================
+# Utility functions
+# ==========================================================================
+
+
+# Additional helper function for NIX format
+def list_available_sessions(base_path=None):
+    """
+    List all available sessions in the NIX datasets directory.
+    
+    Parameters
+    ----------
+    base_path : str, optional
+        Path to the datasets_nix directory. If None, uses default path.
+        
+    Returns
+    -------
+    sessions : dict
+        Dictionary with session names as keys and available file types as values
+    """
+    if base_path is None:
+        base_path = '../data/multielectrode_grasp/datasets_nix/'
+    
+    base_path = os.path.abspath(base_path)
+    
+    if not os.path.exists(base_path):
+        print(f"Directory not found: {base_path}")
+        return {}
+    
+    sessions = {}
+    for filename in os.listdir(base_path):
+        if filename.endswith('.nix'):
+            if filename.endswith('_no_raw.nix'):
+                session_name = filename.replace('_no_raw.nix', '')
+                if session_name not in sessions:
+                    sessions[session_name] = []
+                sessions[session_name].append('no_raw')
+            else:
+                session_name = filename.replace('.nix', '')
+                if session_name not in sessions:
+                    sessions[session_name] = []
+                sessions[session_name].append('raw')
+    
+    return sessions
+
+
+# ==========================================================================
+# Example usage and demonstration functions  
+# ==========================================================================
+
+
+# Example usage function
+def example_usage():
+    """
+    Example of how to use the updated NIX-based loader with load_epoch_concatenated_trials.
+    """
+    # List available sessions
+    sessions = list_available_sessions()
+    print("Available sessions:", sessions)
+    
+    # Load a session (use 'i140703-001' or 'l101210-001')
+    session_name = 'i140703-001'  # or 'l101210-001'
+    
+    # Example parameters
+    epoch = 'movement'  # or 'start', 'cue1', 'earlydelay', 'latedelay', 'hold'
+    trialtype = 'SGHF'  # or any other trial type, or None for all
+    snr_threshold = 2.0
+    synchrony_size = 3
+    trial_separation = 100 * pq.ms
+    
+    # Load concatenated trials using the main function
+    print(f"\nLoading concatenated trials for session {session_name}...")
+    sts = load_epoch_concatenated_trials(
+        session_name=session_name,
+        epoch=epoch,
+        trialtypes=trialtype,
+        SNRthresh=snr_threshold,
+        synchsize=synchrony_size,
+        sep=trial_separation,
+        include_raw=False,  # Use lighter files without raw data
+        verbose=True
+    )
+    
+    print(f"Loaded {len(sts)} concatenated spike trains")
+    
+    if sts:
+        # Show some statistics
+        print(f"First spike train duration: {sts[0].t_stop}")
+        print(f"First spike train has {len(sts[0])} spikes")
+        print(f"Annotations: {list(sts[0].annotations.keys())}")
+    
+    return sts
+
+
+# Function to demonstrate different epoch loading options
+def demonstrate_epoch_loading():
+    """
+    Demonstrate loading different epochs and trial types.
+    """
+    session_name = 'i140703-001'
+    
+    # Test different epochs
+    epochs = ['start', 'cue1', 'earlydelay', 'latedelay', 'movement', 'hold']
+    
+    for epoch in epochs:
+        try:
+            print(f"\nTesting epoch: {epoch}")
+            sts = load_epoch_concatenated_trials(
+                session_name=session_name,
+                epoch=epoch,
+                trialtypes=None,  # All trial types
+                SNRthresh=0,
+                include_raw=False,
+                verbose=True
+            )
+            print(f"  -> Successfully loaded {len(sts)} spike trains")
+            
+        except Exception as e:
+            print(f"  -> Error loading epoch {epoch}: {e}")
+    
+    # Test custom epoch definition
+    print(f"\nTesting custom epoch definition...")
+    try:
+        custom_epoch = ('CUE-ON', -100 * pq.ms, 200 * pq.ms)
+        sts = load_epoch_concatenated_trials(
+            session_name=session_name,
+            epoch=custom_epoch,
+            trialtypes=None,
+            SNRthresh=0,
+            include_raw=False,
+            verbose=True
+        )
+        print(f"  -> Successfully loaded {len(sts)} spike trains with custom epoch")
+        
+    except Exception as e:
+        print(f"  -> Error loading custom epoch: {e}")
+
+
+if __name__ == "__main__":
+    # Run the main example
+    sts = example_usage()
+    
+    # Uncomment to test different epochs
+    # demonstrate_epoch_loading()
