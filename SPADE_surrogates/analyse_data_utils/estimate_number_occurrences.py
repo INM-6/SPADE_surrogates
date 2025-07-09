@@ -16,7 +16,7 @@ import yaml
 from yaml import Loader
 
 from SPADE_surrogates.analyse_data_utils import spade_utils as utils
-
+from SPADE_surrogates.rgutils import save_processed_data, load_processed_spike_trains
 
 def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='original'):
     """
@@ -64,7 +64,7 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
     else:
         filename = f'{data_path}{session}/{process}_{epoch}_{trialtype}.npy'
     
-    spike_trains = np.load(filename, allow_pickle=True)
+    spike_trains = load_processed_spike_trains(filename)
     
     # Calculate basic statistics
     data_duration = spike_trains[0].t_stop

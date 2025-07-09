@@ -134,7 +134,7 @@ def load_job_parameters(session, context, job_id, process=None):
 def load_configuration():
     """Load configuration from YAML file."""
     try:
-        with open("configfile.yaml", 'r') as stream:
+        with open("../configfile.yaml", 'r') as stream:
             config = yaml.load(stream, Loader=Loader)
         return config
     except FileNotFoundError:

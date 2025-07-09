@@ -12,10 +12,42 @@ Workflow steps:
 
 import numpy as np
 import quantities as pq
-from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences import estimate_number_occurrences
+import json
+from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences import execute_occurrence_estimation
 
 # Load configuration file
 configfile: "../configfile.yaml"
+
+# =============================================================================
+# SNAKEMAKE 8.x RESOURCE CONFIGURATION
+# =============================================================================
+
+# Load cluster configuration from JSON file
+with open("../cluster.json", "r") as f:
+    cluster_config = json.load(f)
+
+# Set default resources from cluster.json
+default_cluster = cluster_config["__default__"]
+workflow.default_resources = {
+    "ntasks": default_cluster["ntasks"],
+    "cpus_per_task": default_cluster["cpus_per_task"],
+    "time": default_cluster["time"],
+    "mem": default_cluster["mem"],
+    "partition": default_cluster["partition"]
+}
+
+def get_rule_resources(rule_name):
+    """Get resources for a specific rule from cluster.json"""
+    if rule_name in cluster_config:
+        rule_config = cluster_config[rule_name]
+        return {
+            "ntasks": rule_config["ntasks"],
+            "cpus_per_task": rule_config["cpus_per_task"],
+            "time": rule_config["time"],
+            "mem": rule_config["mem"],
+            "partition": rule_config["partition"]
+        }
+    return workflow.default_resources
 
 # =============================================================================
 # CONFIGURATION PARAMETERS
@@ -72,25 +104,9 @@ print(f"  Additional parameters: SNR_thresh={SNR_thresh}, synchsize={synchsize}"
 print("Estimating minimum occurrence thresholds for experimental data...")
 
 # Create the parameter dictionary (exactly as in original)
-param_dict, excluded_neurons = estimate_number_occurrences(
-    sessions=sessions,
-    epochs=epochs,
-    trialtypes=trialtypes,
-    binsize=binsize,
-    abs_min_spikes=abs_min_spikes,
-    abs_min_occ=abs_min_occ,
-    correction=correction,
-    psr_param=psr_param,
-    alpha=alpha,
-    n_surr=n_surr,
-    dither=dither,
-    spectrum=spectrum,
-    winlen=winlen,
-    percentile_poiss=percentile_poiss,
-    percentile_rates=percentile_rates,
-    unit=unit,
-    firing_rate_threshold=firing_rate_threshold,
-    surr_method=surr_method)
+param_dict, excluded_neurons = execute_occurrence_estimation(
+    analyze_original=True
+)
 
 print("Parameter dictionary created successfully")
 
@@ -130,13 +146,15 @@ rule all:
     message:
         "SPADE analysis workflow for experimental data completed successfully!"
 
-# Rule to store the parameter dictionary (same as original)
+# Rule to store the parameter dictionary
 rule create_parameter_dict:
     input:
         '../configfile.yaml'
     output:
         'param_dict.npy',
         'excluded_neurons.npy'
+    resources:
+        **get_rule_resources("create_parameter_dict")
     message:
         "Creating parameter dictionary with occurrence thresholds"
     run:
@@ -144,7 +162,7 @@ rule create_parameter_dict:
         np.save('./excluded_neurons.npy', excluded_neurons)
         print(f"Saved parameter dictionary and excluded neurons")
 
-# Rule to run the SPADE analysis (same as original)
+# Rule to run the SPADE analysis
 rule analyze_data:
     input:
         parameter_file='param_dict.npy',
@@ -152,6 +170,8 @@ rule analyze_data:
         script='spade_analysis.py'
     output:
         '../../results/experimental_data/{surr_method}/{session}/{context}/{job_id}/results.npy'
+    resources:
+        **get_rule_resources("analyze_data")
     message:
         "Running SPADE analysis: {wildcards.session} {wildcards.context} job {wildcards.job_id}"
     shell:
@@ -161,12 +181,12 @@ rule analyze_data:
         echo "Context: {wildcards.context}"
         echo "Job ID: {wildcards.job_id}"
         echo "Surrogate method: {wildcards.surr_method}"
-        echo "MPI ranks: """ + str(MPI_RANKS) + """
+        echo "MPI ranks: {MPI_RANKS}"
         echo "Activating virtual environment..."
         
-        source ~/spade_env/bin/activate
+        source /users/bouss/spade_env/bin/activate
         
-        mpirun -n """ + str(MPI_RANKS) + """ python spade_analysis.py \
+        mpirun -n {MPI_RANKS} python spade_analysis.py \
             {wildcards.job_id} \
             {wildcards.context} \
             {wildcards.session} \
@@ -175,13 +195,15 @@ rule analyze_data:
         echo "SPADE analysis completed for job {wildcards.job_id}"
         """
 
-# Rule to apply PSF and PSR filtering (same as original)
+# Rule to apply PSF and PSR filtering
 rule filter_results:
     input:
         results=get_job_results_for_context,
         script='filter_results.py'
     output:
         '../../results/experimental_data/{surr_method}/{session}/{context}/filtered_res.npy'
+    resources:
+        **get_rule_resources("filter_results")
     message:
         "Filtering results: {wildcards.session} {wildcards.context}"
     shell:
@@ -193,7 +215,7 @@ rule filter_results:
         echo "Number of job results to merge: $(echo {input.results} | wc -w)"
         echo "Activating virtual environment..."
         
-        source ~/spade_env/bin/activate
+        source /users/bouss/spade_env/bin/activate
         
         python filter_results.py \
             {wildcards.context} \
@@ -231,6 +253,14 @@ def validate_experimental_workflow():
         print(f"Total excluded neurons: {total_excluded}")
     
     print("=== Validation Complete ===\n")
+    
+    # Print resource configuration summary
+    print("=== Resource Configuration Summary ===")
+    print(f"Default resources: {workflow.default_resources}")
+    for rule_name in ['create_parameter_dict', 'analyze_data', 'filter_results']:
+        if rule_name in cluster_config:
+            print(f"{rule_name}: {cluster_config[rule_name]}")
+    print("=== End Resource Summary ===\n")
 
 # Run validation (optional - doesn't affect workflow)
 validate_experimental_workflow()

@@ -9,7 +9,7 @@
 #SBATCH --partition=blaustein
 
 # =============================================================================
-# SPADE Analysis SLURM Submission Script
+# SPADE Analysis SLURM Submission Script (Updated for Snakemake 8.x)
 # =============================================================================
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -19,9 +19,8 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 # =============================================================================
 
 # Paths (adjust these to your environment)
-VIRTUAL_ENV_PATH="~/spade_env/bin/activate"
+VIRTUAL_ENV_PATH="/users/bouss/spade_env/bin/activate"
 CONFIG_FILE="../configfile.yaml" 
-CLUSTER_CONFIG="../cluster.json"
 LOG_DIR="logs"
 SLURM_LOG_DIR="slurm"
 
@@ -71,21 +70,22 @@ echo "Maximum concurrent jobs: ${MAX_JOBS}"
 echo "Total cores available: ${CORES}"
 echo ""
 
-# Main snakemake execution with cluster submission
+# Main snakemake execution with cluster submission (Snakemake 8.x syntax)
 snakemake \
     --jobs "${MAX_JOBS}" \
-    --cluster "sbatch \
-        --ntasks={cluster.ntasks} \
-        --cpus-per-task={cluster.cpus_per_task} \
-        --time={cluster.time} \
-        --mem={cluster.mem} \
-        --partition={cluster.partition} \
-        --job-name={cluster.jobname} \
+    --executor cluster-generic \
+    --cluster-generic-submit-cmd "sbatch \
+        --ntasks={resources.ntasks} \
+        --cpus-per-task={resources.cpus_per_task} \
+        --time={resources.time} \
+        --mem={resources.mem} \
+        --partition={resources.partition} \
+        --job-name={rule}.{jobid} \
         --output=${SLURM_LOG_DIR}/rule-%j.out \
         --error=${SLURM_LOG_DIR}/rule-%j.err \
-        --mail-type=FAIL" \
-    --cluster-config "${CLUSTER_CONFIG}" \
-    --jobname "{jobid}.{rulename}" \
+        --mail-type=FAIL \
+        --mail-user=p.bouss@fz-juelich.de \
+        --parsable" \
     --latency-wait "${LATENCY_WAIT}" \
     --keep-going \
     --rerun-incomplete \
