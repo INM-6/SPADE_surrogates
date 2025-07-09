@@ -10,6 +10,7 @@ import quantities as pq
 import yaml
 
 from generate_artificial_data import get_cv2
+from rgutils import load_processed_spike_trains
 
 
 def create_firing_rate_plots(axes, what_to_plot='rate'):
@@ -46,10 +47,9 @@ def create_firing_rate_plots(axes, what_to_plot='rate'):
 
                 bev_id = bev_id + epoch_id
 
-                spiketrains = list(np.load(
+                spiketrains = load_processed_spike_trains(
                     f'{spiketrain_path}{process}/'
-                    f'{session}/{process}_{epoch}_{trialtype}.npy',
-                    allow_pickle=True))
+                    f'{session}/{process}_{epoch}_{trialtype}.npy')
 
                 for neuron in excluded_neurons[session]:
                     spiketrains.pop(int(neuron))

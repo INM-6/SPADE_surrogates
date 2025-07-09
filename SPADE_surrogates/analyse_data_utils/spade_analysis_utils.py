@@ -15,6 +15,7 @@ import yaml
 from yaml import Loader
 from elephant.spade import spade
 from SPADE_surrogates.analyse_data_utils.spade_utils import mkdirp, split_path
+from SPADE_surrogates.rgutils import save_processed_data, load_processed_spike_trains
 
 
 def generate_reproducible_seed(session, context, job_id, surr_method, mpi_rank=0):
@@ -172,8 +173,7 @@ def load_experimental_data(session, epoch, trialtype):
     data_file = f'../../data/concatenated_spiketrains/{session}/{epoch}_{trialtype}.npy'
     
     try:
-        spike_trains = np.load(data_file, allow_pickle=True)
-        spike_trains_list = list(spike_trains)
+        spike_trains_list = load_processed_spike_trains(data_file)
     except FileNotFoundError:
         raise FileNotFoundError(f"Experimental data not found: {data_file}")
     
@@ -208,8 +208,7 @@ def load_artificial_data(session, epoch, trialtype, process):
     data_file = f'../../data/artificial_data/{process}/{session}/{process}_{epoch}_{trialtype}.npy'
     
     try:
-        spike_trains = np.load(data_file, allow_pickle=True)
-        spike_trains_list = list(spike_trains)
+        spike_trains_list = load_processed_spike_trains(data_file)
     except FileNotFoundError:
         raise FileNotFoundError(f"Artificial data not found: {data_file}")
     

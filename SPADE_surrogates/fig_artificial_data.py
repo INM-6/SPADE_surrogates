@@ -16,6 +16,7 @@ import matplotlib.pylab as pylab
 from fig_spikeloss_r2gstats import get_cv2
 from generate_artificial_data import estimate_rate_deadtime, \
     create_st_list, estimate_deadtime
+from rgutils import load_processed_spike_trains
 
 xlabelpad = 0.5
 ylabelpad = -0.3
@@ -537,8 +538,7 @@ def calculate_fps_rate(surrogate_methods, sessions, binsize, winlen,
                 spiketrain_path = \
                     f'../data/artificial_data/{process}/{session}/' \
                     f'{process}_{behavioral_context}.npy'
-                spiketrains = list(
-                    np.load(spiketrain_path, allow_pickle=True))
+                spiketrains = load_processed_spike_trains(spiketrain_path)
                 for neuron in excluded_neurons[session]:
                     spiketrains.pop(int(neuron))
 
@@ -743,12 +743,12 @@ if __name__ == "__main__":
     session = 'i140703-001'
     epoch = 'movement'
     trialtype = 'PGHF'
-    sts = np.load(f'../data/concatenated_spiketrains/{session}/'
-                  f'{epoch}_{trialtype}.npy', allow_pickle=True)
-    gamma = np.load(f'../data/artificial_data/gamma/{session}/'
-                    f'gamma_{epoch}_{trialtype}.npy', allow_pickle=True)
-    ppd = np.load(f'../data/artificial_data/ppd/{session}/'
-                  f'ppd_{epoch}_{trialtype}.npy', allow_pickle=True)
+    sts = load_processed_spike_trains(f'../data/concatenated_spiketrains/{session}/'
+                  f'{epoch}_{trialtype}.npy')
+    gamma = load_processed_spike_trains(f'../data/artificial_data/gamma/{session}/'
+                    f'gamma_{epoch}_{trialtype}.npy')
+    ppd = load_processed_spike_trains(f'../data/artificial_data/ppd/{session}/'
+                  f'ppd_{epoch}_{trialtype}.npy')
 
     figure_artificial_data(
         sts=sts,

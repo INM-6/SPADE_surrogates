@@ -42,7 +42,7 @@ echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $HOSTNAME"
 echo "Started at: $(date)"
 
-python generate_artificial_data_single.py {session} {epoch} {trialtype}
+python generate_artificial_data.py {session} {epoch} {trialtype}
 
 echo "Finished at: $(date)"
 """

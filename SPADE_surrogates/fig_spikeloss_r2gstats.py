@@ -16,6 +16,8 @@ import matplotlib.gridspec as gridspec
 
 from generate_artificial_data import estimate_rate_deadtime, create_st_list
 
+from rgutils import load_processed_spike_trains
+
 
 XLABELPAD = -0.25
 
@@ -573,9 +575,8 @@ def fig_2(folder, sessions, epoch, trialtype, dither, binsize, n_surr,
     # loading
     extra_part = f'{data_type}_' if data_type != 'original' else ''
     file_nikos = f'{folder}{sessions[0]}/{extra_part}{epoch}_{trialtype}.npy'
-    sts_N = np.load(
-        file_nikos,
-        allow_pickle=True)
+    sts_N = load_processed_spike_trains(
+        file_nikos)
 
     # plotting
     gs0 = gridspec.GridSpecFromSubplotSpec(
@@ -600,9 +601,8 @@ def fig_2(folder, sessions, epoch, trialtype, dither, binsize, n_surr,
     plt.figtext(
         x=0.055, y=0.95, s='A', fontsize=12, multialignment='center')
     # Lilou
-    sts_L = np.load(
-        f'{folder}{sessions[1]}/{extra_part}{epoch}_{trialtype}.npy',
-        allow_pickle=True)
+    sts_L = load_processed_spike_trains(
+        f'{folder}{sessions[1]}/{extra_part}{epoch}_{trialtype}.npy')
 
     gs1 = gridspec.GridSpecFromSubplotSpec(
         nrows=2, ncols=1,
