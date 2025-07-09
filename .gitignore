@@ -1,3 +1,9 @@
+#Slurm files
+slurm_logs/
+
+#cache files
+processing_cache/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

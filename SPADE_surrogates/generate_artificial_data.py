@@ -3,10 +3,15 @@ Improved script for creating artificial data that mimics experimental data featu
 
 This script generates artificial spike trains using Poisson processes with refractory 
 periods and Gamma processes, based on statistics estimated from real experimental data.
+
+Updated to use load_processed_spike_trains function for loading concatenated data.
 """
 
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+import sys
+import yaml
+from yaml import Loader
 
 import numpy as np
 import quantities as pq
@@ -19,6 +24,230 @@ from tqdm import tqdm
 import elephant.spike_train_generation as stg
 import elephant.statistics as stat
 import elephant.kernels as kernels
+
+
+def save_processed_data(data: List, output_path: Path) -> bool:
+    """
+    Save processed spike train data using the same format as the main processing pipeline.
+    
+    This function uses the same save logic as the concatenated data processing script
+    to ensure consistency across all data files.
+    
+    Parameters
+    ----------
+    data : List
+        Processed spike train data (list of neo.SpikeTrain objects)
+    output_path : Path
+        Output file path
+        
+    Returns
+    -------
+    bool
+        True if save was successful, False otherwise
+    """
+    try:
+        if data:
+            # Convert spike trains to standardized format for saving
+            processed_data = []
+            
+            total_spikes_check = 0  # For verification
+            
+            for i, spike_train in enumerate(data):
+                # Extract spike times - handle different input types
+                if hasattr(spike_train, 'times'):
+                    spike_times = spike_train.times.magnitude
+                elif hasattr(spike_train, 'magnitude'):
+                    spike_times = spike_train.magnitude
+                else:
+                    # Fallback: try to convert to array
+                    spike_times = np.array(spike_train).flatten()
+                
+                total_spikes_check += len(spike_times)
+                
+                # Extract essential data from each spike train
+                spike_data = {
+                    'times': spike_times,  # Actual spike times array
+                    'units': str(spike_train.units) if hasattr(spike_train, 'units') else 's',
+                    't_start': float(spike_train.t_start.magnitude) if hasattr(spike_train, 't_start') else 0.0,
+                    't_stop': float(spike_train.t_stop.magnitude) if hasattr(spike_train, 't_stop') else 0.0,
+                    'annotations': {},
+                    'spike_train_id': i
+                }
+                
+                # Handle annotations carefully
+                if hasattr(spike_train, 'annotations') and spike_train.annotations:
+                    for key, value in spike_train.annotations.items():
+                        try:
+                            if isinstance(value, (np.ndarray, list)):
+                                if isinstance(value, np.ndarray):
+                                    spike_data['annotations'][key] = value.tolist()
+                                else:
+                                    spike_data['annotations'][key] = value
+                            elif hasattr(value, 'magnitude'):  # quantities
+                                spike_data['annotations'][key] = float(value.magnitude)
+                            elif isinstance(value, (np.integer, np.floating)):
+                                spike_data['annotations'][key] = float(value)
+                            else:
+                                spike_data['annotations'][key] = value
+                        except Exception as e:
+                            # Skip problematic annotations
+                            print(f"      ⚠️ Skipping annotation '{key}': {e}")
+                            continue
+                
+                processed_data.append(spike_data)
+            
+            # Verify data before saving
+            saved_spike_counts = [len(st['times']) for st in processed_data]
+            total_saved_spikes = sum(saved_spike_counts)
+            
+            # Save as numpy array with allow_pickle=True
+            np.save(output_path, np.array(processed_data, dtype=object), allow_pickle=True)
+            
+            # Verify what was actually saved
+            try:
+                verification_data = np.load(output_path, allow_pickle=True)
+                actual_total_spikes = sum(len(st['times']) for st in verification_data) if len(verification_data) > 0 else 0
+                
+                print(f"      💾 Saved {len(processed_data)} spike trains to: {output_path}")
+                print(f"         File size: {output_path.stat().st_size / 1024:.1f} KB")
+                print(f"         VERIFICATION: Total spikes saved: {actual_total_spikes:,}")
+                
+                if actual_total_spikes == total_spikes_check:
+                    print(f"         ✅ Spike count verification PASSED")
+                else:
+                    print(f"         ⚠️ Spike count mismatch: Expected {total_spikes_check}, Saved {actual_total_spikes}")
+                
+                # Log statistics about the saved data
+                if actual_total_spikes > 0:
+                    spike_counts = [len(st['times']) for st in verification_data]
+                    mean_spikes = np.mean(spike_counts)
+                    print(f"         Mean spikes per unit: {mean_spikes:.1f}")
+                    print(f"         Spike count range: {min(spike_counts)} - {max(spike_counts)}")
+                    
+            except Exception as e:
+                print(f"         ⚠️ Could not verify saved data: {e}")
+                
+        else:
+            # Save empty array
+            np.save(output_path, np.array([]), allow_pickle=True)
+            print(f"      💾 Saved empty array to: {output_path}")
+            
+        return True
+        
+    except Exception as e:
+        print(f"      ❌ Failed to save data to {output_path}: {e}")
+        import traceback
+        print(f"         Full traceback:\n{traceback.format_exc()}")
+        return False
+    
+def load_processed_spike_trains(file_path: str) -> List[neo.SpikeTrain]:
+    """
+    Load processed spike train data from a saved file and reconstruct neo.SpikeTrain objects.
+    
+    This function is designed to work with the data format saved by the improved
+    spike train processing pipeline.
+    
+    Parameters
+    ----------
+    file_path : str
+        Path to the saved spike train file (.npy format)
+        
+    Returns
+    -------
+    List[neo.SpikeTrain]
+        List of reconstructed neo.SpikeTrain objects
+        
+    Example
+    -------
+    >>> spike_trains = load_processed_spike_trains("../data/concatenated_spiketrains/i140613s001/start_PGHF.npy")
+    >>> print(f"Loaded {len(spike_trains)} spike trains")
+    """
+    try:
+        print(f"   🔄 Loading spike train data from: {file_path}")
+        
+        # Load the data
+        data = np.load(file_path, allow_pickle=True)
+        
+        if len(data) == 0:
+            print(f"   ⚠️ Empty data file: {file_path}")
+            return []
+        
+        print(f"   📊 Found {len(data)} spike train records")
+        
+        # Reconstruct spike trains
+        spike_trains = []
+        
+        for i, spike_data in enumerate(data):
+            try:
+                # Handle different data formats that might be saved
+                if isinstance(spike_data, dict):
+                    # New format with structured data
+                    times = spike_data['times']
+                    units_str = spike_data.get('units', 's')
+                    t_start = spike_data.get('t_start', 0.0)
+                    t_stop = spike_data.get('t_stop', None)
+                    annotations = spike_data.get('annotations', {})
+                    
+                elif hasattr(spike_data, 'times'):
+                    # Already a neo.SpikeTrain object
+                    spike_trains.append(spike_data)
+                    continue
+                    
+                else:
+                    print(f"   ⚠️ Unknown data format for spike train {i}: {type(spike_data)}")
+                    continue
+                
+                # Parse units
+                if units_str == 's' or units_str == '1.0 s':
+                    units = pq.s
+                elif units_str == 'ms' or units_str == '1.0 ms':
+                    units = pq.ms
+                else:
+                    units = pq.s  # Default fallback
+                
+                # Create spike train
+                if t_stop is None:
+                    # Estimate t_stop from the maximum time if not provided
+                    if len(times) > 0:
+                        t_stop = max(times) + 0.1  # Add small buffer
+                    else:
+                        t_stop = 1.0  # Default for empty spike trains
+                
+                spike_train = neo.SpikeTrain(
+                    times * units,
+                    t_start=t_start * units,
+                    t_stop=t_stop * units
+                )
+                
+                # Restore annotations
+                if annotations:
+                    spike_train.annotations.update(annotations)
+                
+                spike_trains.append(spike_train)
+                
+            except Exception as e:
+                print(f"   ⚠️ Error reconstructing spike train {i}: {e}")
+                continue
+        
+        print(f"   ✅ Successfully reconstructed {len(spike_trains)} spike trains")
+        
+        # Log some statistics
+        if spike_trains:
+            spike_counts = [len(st) for st in spike_trains]
+            total_spikes = sum(spike_counts)
+            print(f"      Total spikes across all units: {total_spikes:,}")
+            
+            if total_spikes > 0:
+                print(f"      Mean spikes per unit: {np.mean(spike_counts):.1f}")
+                print(f"      Spike count range: {min(spike_counts)} - {max(spike_counts)}")
+        
+        return spike_trains
+        
+    except Exception as e:
+        print(f"   ❌ Error loading spike trains from {file_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 class ArtificialDataGenerator:
@@ -549,89 +778,6 @@ def shape_factor_from_cv2(cv2: float) -> float:
     return brentq(lambda x: cv2_from_shape_factor(x) - cv2, 0.05, 50.0)
 
 
-def main():
-    """
-    Main function to run the artificial data generation pipeline.
-    """
-    import rgutils
-    import yaml
-    from yaml import Loader
-    
-    # Load configuration
-    with open("configfile.yaml", 'r') as stream:
-        config = yaml.load(stream, Loader=Loader)
-    
-    # Extract configuration parameters
-    sessions = config['sessions']
-    epochs = config['epochs']
-    trialtypes = config['trialtypes']
-    winlen = config['winlen']
-    unit = config['unit']
-    binsize = (config['binsize'] * pq.s).rescale(unit)
-    seed = config['seed']
-    processes = config['processes']
-    SNR_thresh = config['SNR_thresh']
-    synchsize = config['synchsize']
-    
-    # Calculate derived parameters
-    sep = 2 * winlen * binsize
-    max_refractory = 4 * pq.ms
-    load_original_data = False
-    
-    # Initialize data generator
-    generator = ArtificialDataGenerator(max_refractory=max_refractory)
-    
-    # Process each session, epoch, and trial type
-    for session in sessions:
-        # Create output directories
-        output_dirs = {
-            'ppd': Path(f'../data/artificial_data/ppd/{session}'),
-            'gamma': Path(f'../data/artificial_data/gamma/{session}')
-        }
-        
-        for process_type, output_dir in output_dirs.items():
-            output_dir.mkdir(parents=True, exist_ok=True)
-        
-        for epoch in epochs:
-            for trialtype in trialtypes:
-                print(f'Processing: {session} {epoch} {trialtype}')
-                
-                # Load data
-                if load_original_data:
-                    print('Loading experimental data...')
-                    sts = rgutils.load_epoch_concatenated_trials(
-                        session, epoch, trialtypes=trialtype,
-                        SNRthresh=SNR_thresh, synchsize=synchsize, sep=sep
-                    )
-                else:
-                    print('Loading pre-concatenated spike trains...')
-                    data_path = (Path('../data/concatenated_spiketrains') / 
-                               session / f'{epoch}_{trialtype}.npy')
-                    sts = np.load(data_path, allow_pickle=True)
-                
-                # Generate artificial data
-                print("Generating artificial data...")
-                ppd_trains, gamma_trains, cv2_values = generator.generate_artificial_data(
-                    data=sts, processes=processes, sep=sep, seed=seed
-                )
-                
-                print('Data generation complete!')
-                
-                # Save generated data
-                print('Saving data...')
-                if 'ppd' in processes:
-                    ppd_path = output_dirs['ppd'] / f'ppd_{epoch}_{trialtype}.npy'
-                    np.save(ppd_path, ppd_trains)
-                
-                if 'gamma' in processes:
-                    gamma_path = output_dirs['gamma'] / f'gamma_{epoch}_{trialtype}.npy'
-                    cv2_path = output_dirs['gamma'] / f'cv2s_{epoch}_{trialtype}.npy'
-                    np.save(gamma_path, gamma_trains)
-                    np.save(cv2_path, cv2_values)
-                
-                print(f'Completed: {session} {epoch} {trialtype}')
-
-
 # Module-level functions for backward compatibility and external access
 def estimate_rate_deadtime(spiketrain, max_refractory, sep, 
                           sampling_period=0.1 * pq.ms,
@@ -804,6 +950,293 @@ def generate_artificial_data(data, seed, max_refractory, processes, sep):
     generator = ArtificialDataGenerator(max_refractory=max_refractory)
     return generator.generate_artificial_data(data, processes, sep, seed)
 
+def main_all_combinations():
+    """
+    Main function to run the artificial data generation pipeline.
+    """
+    import yaml
+    from yaml import Loader
+    
+    # Load configuration
+    with open("configfile.yaml", 'r') as stream:
+        config = yaml.load(stream, Loader=Loader)
+    
+    # Extract configuration parameters
+    sessions = config['sessions']
+    epochs = config['epochs']
+    trialtypes = config['trialtypes']
+    winlen = config['winlen']
+    unit = config['unit']
+    binsize = (config['binsize'] * pq.s).rescale(unit)
+    seed = config['seed']
+    processes = config['processes']
+    SNR_thresh = config['SNR_thresh']
+    synchsize = config['synchsize']
+    
+    # Calculate derived parameters
+    sep = 2 * winlen * binsize
+    max_refractory = 4 * pq.ms
+    
+    # Initialize data generator
+    generator = ArtificialDataGenerator(max_refractory=max_refractory)
+    
+    print("="*60)
+    print("ARTIFICIAL DATA GENERATION")
+    print("="*60)
+    print(f"Sessions: {sessions}")
+    print(f"Epochs: {epochs}")
+    print(f"Trial types: {trialtypes}")
+    print(f"Processes to generate: {processes}")
+    print(f"Random seed: {seed}")
+    print(f"Separation time: {sep}")
+    print("="*60)
+    
+    # Process each session, epoch, and trial type
+    for session in sessions:
+        print(f"\n🎯 Processing session: {session}")
+        
+        # Create output directories
+        output_dirs = {
+            'ppd': Path(f'../data/artificial_data/ppd/{session}'),
+            'gamma': Path(f'../data/artificial_data/gamma/{session}')
+        }
+        
+        for process_type, output_dir in output_dirs.items():
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"   📁 Created directory: {output_dir}")
+        
+        for epoch in epochs:
+            for trialtype in trialtypes:
+                print(f'\n📋 Processing: {session} | {epoch} | {trialtype}')
+                
+                try:
+                    # Load pre-processed concatenated spike trains
+                    data_path = (Path('../data/concatenated_spiketrains') / 
+                               session / f'{epoch}_{trialtype}.npy')
+                    
+                    print(f'   📂 Loading from: {data_path}')
+                    
+                    if not data_path.exists():
+                        print(f'   ❌ File not found: {data_path}')
+                        print(f'      Skipping {session}/{epoch}/{trialtype}')
+                        continue
+                    
+                    # Load the processed spike trains using our improved loader
+                    spike_trains = load_processed_spike_trains(str(data_path))
+                    
+                    if not spike_trains:
+                        print(f'   ⚠️ No spike trains loaded from {data_path}')
+                        print(f'      Skipping {session}/{epoch}/{trialtype}')
+                        continue
+                    
+                    print(f'   ✅ Loaded {len(spike_trains)} spike trains')
+                    
+                    # Log some statistics about the loaded data
+                    spike_counts = [len(st) for st in spike_trains]
+                    total_spikes = sum(spike_counts)
+                    mean_spikes = np.mean(spike_counts) if spike_counts else 0
+                    
+                    print(f'      Total spikes: {total_spikes:,}')
+                    print(f'      Mean spikes per unit: {mean_spikes:.1f}')
+                    print(f'      Spike count range: {min(spike_counts)} - {max(spike_counts)}')
+                    
+                    # Generate artificial data
+                    print("   🔬 Generating artificial data...")
+                    ppd_trains, gamma_trains, cv2_values = generator.generate_artificial_data(
+                        data=spike_trains, processes=processes, sep=sep, seed=seed
+                    )
+                    
+                    print('   ✅ Data generation complete!')
+                    
+                    # Save generated data using the improved save function
+                    print('   💾 Saving artificial data...')
+                    
+                    if 'ppd' in processes and ppd_trains:
+                        ppd_path = output_dirs['ppd'] / f'ppd_{epoch}_{trialtype}.npy'
+                        print(f'      📁 Saving PPD data to: {ppd_path}')
+                        
+                        if save_processed_data(ppd_trains, ppd_path):
+                            print(f'      ✅ PPD data saved successfully')
+                            print(f'         {len(ppd_trains)} spike trains processed')
+                        else:
+                            print(f'      ❌ Failed to save PPD data')
+                    
+                    if 'gamma' in processes and gamma_trains:
+                        gamma_path = output_dirs['gamma'] / f'gamma_{epoch}_{trialtype}.npy'
+                        cv2_path = output_dirs['gamma'] / f'cv2s_{epoch}_{trialtype}.npy'
+                        
+                        print(f'      📁 Saving Gamma data to: {gamma_path}')
+                        
+                        if save_processed_data(gamma_trains, gamma_path):
+                            print(f'      ✅ Gamma spike trains saved successfully')
+                            print(f'         {len(gamma_trains)} spike trains processed')
+                        else:
+                            print(f'      ❌ Failed to save Gamma spike trains')
+                        
+                        # Save CV2 values using numpy (these are just numbers, not spike trains)
+                        try:
+                            np.save(cv2_path, cv2_values, allow_pickle=True)
+                            print(f'      ✅ CV2 values saved to: {cv2_path}')
+                            print(f'         {len(cv2_values)} CV2 values saved')
+                        except Exception as e:
+                            print(f'      ❌ Failed to save CV2 values: {e}')
+                    
+                    print(f'   🎉 Completed: {session}/{epoch}/{trialtype}')
+                    
+                except Exception as e:
+                    print(f'   ❌ Error processing {session}/{epoch}/{trialtype}: {e}')
+                    import traceback
+                    print(f'      Full traceback:')
+                    traceback.print_exc()
+                    continue
+    
+    print(f"\n{'='*60}")
+    print("🎉 ARTIFICIAL DATA GENERATION COMPLETE!")
+    print(f"{'='*60}")
 
+
+def main():
+    """
+    Main function to run artificial data generation for a single combination.
+    Expects command line arguments: session epoch trialtype
+    """
+    # Check command line arguments
+    if len(sys.argv) != 4:
+        print("Usage: python generate_artificial_data_single.py <session> <epoch> <trialtype>")
+        sys.exit(1)
+    
+    session = sys.argv[1]
+    epoch = sys.argv[2]
+    trialtype = sys.argv[3]
+    
+    # Load configuration
+    with open("configfile.yaml", 'r') as stream:
+        config = yaml.load(stream, Loader=Loader)
+    
+    # Extract configuration parameters
+    epochs = config['epochs']
+    trialtypes = config['trialtypes']
+    winlen = config['winlen']
+    unit = config['unit']
+    binsize = (config['binsize'] * pq.s).rescale(unit)
+    seed = config['seed']
+    processes = config['processes']
+    SNR_thresh = config['SNR_thresh']
+    synchsize = config['synchsize']
+    
+    # Calculate derived parameters
+    sep = 2 * winlen * binsize
+    max_refractory = 4 * pq.ms
+    
+    # Initialize data generator
+    generator = ArtificialDataGenerator(max_refractory=max_refractory)
+    
+    print("="*60)
+    print("ARTIFICIAL DATA GENERATION - SINGLE JOB")
+    print("="*60)
+    print(f"Session: {session}")
+    print(f"Epoch: {epoch}")
+    print(f"Trial type: {trialtype}")
+    print(f"Processes to generate: {processes}")
+    print(f"Random seed: {seed}")
+    print(f"Separation time: {sep}")
+    print("="*60)
+    
+    # Create output directories
+    output_dirs = {
+        'ppd': Path(f'/users/bouss/spade/SPADE_surrogates/data/artificial_data/ppd/{session}'),
+        'gamma': Path(f'/users/bouss/spade/SPADE_surrogates/data/artificial_data/gamma/{session}')
+    }
+    
+    for process_type, output_dir in output_dirs.items():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Created directory: {output_dir}")
+    
+    print(f'\n📋 Processing: {session} | {epoch} | {trialtype}')
+    
+    try:
+        # Load pre-processed concatenated spike trains
+        data_path = Path(f'/users/bouss/spade/SPADE_surrogates/data/concatenated_spiketrains/{session}/{epoch}_{trialtype}.npy')
+        
+        print(f'📂 Loading from: {data_path}')
+        
+        if not data_path.exists():
+            print(f'❌ File not found: {data_path}')
+            print(f'   Skipping {session}/{epoch}/{trialtype}')
+            sys.exit(1)
+        
+        # Load the processed spike trains using our improved loader
+        spike_trains = load_processed_spike_trains(str(data_path))
+        
+        if not spike_trains:
+            print(f'⚠️ No spike trains loaded from {data_path}')
+            print(f'   Skipping {session}/{epoch}/{trialtype}')
+            sys.exit(1)
+        
+        print(f'✅ Loaded {len(spike_trains)} spike trains')
+        
+        # Log some statistics about the loaded data
+        spike_counts = [len(st) for st in spike_trains]
+        total_spikes = sum(spike_counts)
+        mean_spikes = np.mean(spike_counts) if spike_counts else 0
+        
+        print(f'   Total spikes: {total_spikes:,}')
+        print(f'   Mean spikes per unit: {mean_spikes:.1f}')
+        print(f'   Spike count range: {min(spike_counts)} - {max(spike_counts)}')
+        
+        # Generate artificial data
+        print("🔬 Generating artificial data...")
+        ppd_trains, gamma_trains, cv2_values = generator.generate_artificial_data(
+            data=spike_trains, processes=processes, sep=sep, seed=seed
+        )
+        
+        print('✅ Data generation complete!')
+        
+        # Save generated data using the improved save function
+        print('💾 Saving artificial data...')
+        
+        if 'ppd' in processes and ppd_trains:
+            ppd_path = output_dirs['ppd'] / f'ppd_{epoch}_{trialtype}.npy'
+            print(f'   📁 Saving PPD data to: {ppd_path}')
+            
+            if save_processed_data(ppd_trains, ppd_path):
+                print(f'   ✅ PPD data saved successfully')
+                print(f'      {len(ppd_trains)} spike trains processed')
+            else:
+                print(f'   ❌ Failed to save PPD data')
+                sys.exit(1)
+        
+        if 'gamma' in processes and gamma_trains:
+            gamma_path = output_dirs['gamma'] / f'gamma_{epoch}_{trialtype}.npy'
+            cv2_path = output_dirs['gamma'] / f'cv2s_{epoch}_{trialtype}.npy'
+            
+            print(f'   📁 Saving Gamma data to: {gamma_path}')
+            
+            if save_processed_data(gamma_trains, gamma_path):
+                print(f'   ✅ Gamma spike trains saved successfully')
+                print(f'      {len(gamma_trains)} spike trains processed')
+            else:
+                print(f'   ❌ Failed to save Gamma spike trains')
+                sys.exit(1)
+            
+            # Save CV2 values using numpy (these are just numbers, not spike trains)
+            try:
+                np.save(cv2_path, cv2_values, allow_pickle=True)
+                print(f'   ✅ CV2 values saved to: {cv2_path}')
+                print(f'      {len(cv2_values)} CV2 values saved')
+            except Exception as e:
+                print(f'   ❌ Failed to save CV2 values: {e}')
+                sys.exit(1)
+        
+        print(f'🎉 Completed: {session}/{epoch}/{trialtype}')
+        
+    except Exception as e:
+        print(f'❌ Error processing {session}/{epoch}/{trialtype}: {e}')
+        import traceback
+        print(f'   Full traceback:')
+        traceback.print_exc()
+        sys.exit(1)
+
+    
 if __name__ == '__main__':
     main()

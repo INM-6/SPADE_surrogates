@@ -1,6 +1,14 @@
 # The sessions to analyze
 #sessions : ['i140703-001','l101210-001']
-sessions : ['i140703-001','l101210-001']
+sessions : ['i140613s001', 'i140616s001', 'i140617s001', 'i140627s001', 'i140701s001', 
+                         'i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
+                         'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
+                         'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
+# sessions : ['i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
+#                          'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
+#                          'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
+# sessions : ['l101108s001', 
+#                          'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
 # The 5 epochs to analyze
 epochs : ['start', 'cue1', 'earlydelay', 'latedelay', 'movement', 'hold']
 # The 4 trial types to analyze
@@ -8,7 +16,7 @@ trialtypes : ['PGHF', 'PGLF' ,'SGHF', 'SGLF' ]
 # Absolute (independent of the number of spikes) minimum number of occurrences of a pattern
 abs_min_occ : 10
 # Minimum number of spikes
-abs_min_spikes : 2.
+abs_min_spikes : 2
 # The binsize to use to run the spade analysis in seconds
 binsize : 0.005
 # Percentile of Poisson pattern count to set minimum occ (int between 0 and 100)
