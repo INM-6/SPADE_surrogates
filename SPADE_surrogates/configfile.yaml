@@ -14,7 +14,7 @@ epochs : ['start', 'cue1', 'earlydelay', 'latedelay', 'movement', 'hold']
 # The 4 trial types to analyze
 trialtypes : ['PGHF', 'PGLF' ,'SGHF', 'SGLF' ]
 # Absolute (independent of the number of spikes) minimum number of occurrences of a pattern
-abs_min_occ : 10
+abs_min_occ : 10   # This value is now ignored - calculated dynamically as ceil(n_trials/3)
 # Minimum number of spikes
 abs_min_spikes : 2
 # The binsize to use to run the spade analysis in seconds

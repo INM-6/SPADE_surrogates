@@ -18,7 +18,7 @@ def parse_arguments():
                         help='behavioral context (epoch_trialtype) to analyze')
     parser.add_argument('session', metavar='session', type=str,
                         help='Recording session to analyze')
-    parser.add_argument('surrogate method', metavar='surr_method', type=str,
+    parser.add_argument('surr_method', metavar='surr_method', type=str,
                         help='Surrogate method to use')
     
     return parser.parse_args()

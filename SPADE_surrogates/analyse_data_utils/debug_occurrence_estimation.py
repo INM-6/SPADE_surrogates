@@ -311,7 +311,7 @@ def _get_non_stationarity_factor(epoch, process='original'):
         Non-stationarity factor
     """
     stationary_conditions = (
-        epoch in ("start", "cue1") or 
+        epoch in ("start", "wait") or 
         process in ('homogeneous_poisson', 'stationary_poisson', 'stationary_gamma')
     )
     
