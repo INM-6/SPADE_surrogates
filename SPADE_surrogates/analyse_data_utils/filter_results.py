@@ -317,7 +317,7 @@ def filter_spade_results(directory, annotations_path, output_path):
         concepts=concepts,
         pv_spec=pv_spec_for_output,
         winlen=winlen,
-        binsize=binsize,
+        bin_size=binsize,
         spectrum=spectrum)
     
     print(f'Final number of patterns: {len(patterns)}')
