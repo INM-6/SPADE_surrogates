@@ -39,7 +39,7 @@ def main():
     
     # Define paths
     directory = f'../../results/experimental_data/{surr_method}/{session_name}/{context}'
-    annotations_path = f'../results/{surr_method}/{session_name}/{context}/annotations.npy'
+    annotations_path = f'../../results/experimental_data/{surr_method}/{session_name}/{context}/annotations.npy'
     output_path = f'../../results/experimental_data/{surr_method}/{session_name}/{context}/filtered_res.npy'
     
     # Process the results using shared utility functions

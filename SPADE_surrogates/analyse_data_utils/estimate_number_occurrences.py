@@ -540,10 +540,10 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     sorted_active_rates = np.sort(active_rates)
     non_stationarity = _get_non_stationarity_factor(epoch, process)
     
-    print(f"  Processing pattern sizes 2-6 (non-stationarity: {non_stationarity}, dynamic_abs_min_occ: {dynamic_abs_min_occ})")
+    print(f"  Processing pattern sizes 2-5 (non-stationarity: {non_stationarity}, dynamic_abs_min_occ: {dynamic_abs_min_occ})")
     
-    # Process each pattern size from 2 to 6 (inclusive)
-    for pattern_size in range(2, 7):
+    # Process each pattern size from 2 to 5 (inclusive)
+    for pattern_size in range(2, 6):
         # Calculate reference rate using geometric mean of top neurons
         if len(sorted_active_rates) >= pattern_size:
             rate_ref = gmean(sorted_active_rates[-pattern_size:])
