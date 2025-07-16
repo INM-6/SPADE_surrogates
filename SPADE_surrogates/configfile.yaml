@@ -1,8 +1,8 @@
 # The sessions to analyze (full list)
 sessions : ['i140613s001', 'i140616s001', 'i140617s001', 'i140627s001', 'i140701s001', 
-            'i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
-            'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
-            'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
+                         'i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
+                         'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
+                         'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
 
 # Reduced sessions for non-trial_shifting surrogate methods
 reduced_sessions : ['i140703s001', 'l101210s001']
@@ -36,6 +36,8 @@ n_surr : 5000
 alpha : 0.05
 # Surrogate methods to use (as a list for wildcards)
 surrogates : ['dither_spikes', 'dither_spikes_with_refractory_period', 'joint_isi_dithering', 'isi_dithering', 'trial_shifting', 'bin_shuffling']
+# Surrogate method to use (for backward compatibility - uses first from surrogates list)
+surr_method : 'trial_shifting'
 # Multitesting statistical correction
 correction : 'fdr_bh'
 # PSR parameters

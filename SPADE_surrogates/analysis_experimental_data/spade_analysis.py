@@ -4,16 +4,19 @@ Simplified SPADE analysis script for experimental data.
 
 This script uses the shared utility functions to perform SPADE analysis
 on experimental spike train data with reproducible seeding and MPI parallelization.
+
+Usage:
+    mpirun -n <n_ranks> python spade_analysis.py <pattern_size> <context> <session> <surrogate_method>
 """
 
 import numpy as np
 import os
+import sys
+import argparse
 from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import (
     initialize_mpi,
     generate_reproducible_seed,
-    parse_experimental_arguments,
     load_configuration,
-    load_job_parameters,
     validate_job_context,
     load_experimental_data,
     apply_firing_rate_threshold,
@@ -24,7 +27,24 @@ from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import (
 )
 
 
-def load_calibrated_job_parameters(session, context, job_id):
+def parse_experimental_arguments():
+    """Parse command line arguments for experimental data SPADE analysis."""
+    parser = argparse.ArgumentParser(
+        description='SPADE analysis for experimental data with calibrated parameters')
+    
+    parser.add_argument('pattern_size', type=int,
+                        help='Pattern size (number of spikes)')
+    parser.add_argument('context', type=str,
+                        help='Behavioral context (epoch_trialtype)')
+    parser.add_argument('session', type=str,
+                        help='Recording session')
+    parser.add_argument('surrogate_method', type=str,
+                        help='Surrogate method to use')
+    
+    return parser.parse_args()
+
+
+def load_calibrated_job_parameters(session, context, pattern_size):
     """
     Load job parameters, preferring calibrated parameters if available.
     """
@@ -45,20 +65,20 @@ def load_calibrated_job_parameters(session, context, job_id):
     if context not in param_dict[session]:
         raise ValueError(f"Context {context} not found for session {session}")
     
-    if job_id not in param_dict[session][context]:
-        raise ValueError(f"Job {job_id} not found for session {session}, context {context}")
+    if pattern_size not in param_dict[session][context]:
+        raise ValueError(f"Pattern size {pattern_size} not found for session {session}, context {context}")
     
-    job_params = param_dict[session][context][job_id]
+    job_params = param_dict[session][context][pattern_size]
     
     # Log parameter source and values
     if job_params.get('calibration_applied', False):
         original_min_occ = job_params.get('original_min_occ', 'unknown')
         current_min_occ = job_params.get('min_occ', 'unknown')
-        print(f"Using calibrated parameters for job {job_id}:")
+        print(f"Using calibrated parameters for pattern size {pattern_size}:")
         print(f"  min_occ: {original_min_occ} → {current_min_occ}")
         print(f"  calibration_applied: {job_params.get('calibration_applied', False)}")
     else:
-        print(f"Using original parameters for job {job_id}")
+        print(f"Using original parameters for pattern size {pattern_size}")
         print(f"  min_occ: {job_params.get('min_occ', 'unknown')}")
     
     return job_params
@@ -74,17 +94,17 @@ def main():
     
     # Parse command line arguments
     args = parse_experimental_arguments()
-    session = args.session
+    pattern_size = args.pattern_size
     context = args.context
-    job_id = args.job_id
+    session = args.session
     surr_method = args.surrogate_method
     
     if rank == 0:
         print(f"Job parameters: session={session}, context={context}, "
-              f"job_id={job_id}, surr_method={surr_method}")
+              f"pattern_size={pattern_size}, surr_method={surr_method}")
     
     # Generate reproducible seed for this job and MPI rank
-    random_seed = generate_reproducible_seed(session, context, job_id, surr_method, rank)
+    random_seed = generate_reproducible_seed(session, context, pattern_size, surr_method, rank)
     np.random.seed(random_seed)
     if rank == 0:
         print(f"Using reproducible seed: {random_seed}")
@@ -93,7 +113,7 @@ def main():
     config = load_configuration()
     
     # Load job parameters (calibrated if available)
-    job_params = load_calibrated_job_parameters(session, context, job_id)
+    job_params = load_calibrated_job_parameters(session, context, pattern_size)
     
     # Extract job-specific parameters
     epoch = job_params['epoch']
@@ -144,15 +164,15 @@ def main():
             session=session,
             epoch=epoch,
             trialtype=trialtype,
-            job_id=job_id,
+            job_id=pattern_size,
             surr_method=surr_method,
             annotations_dict=annotations_dict,
             mpi_rank=rank,
             mpi_size=size,
             random_seed=random_seed
         )
-        print(f"Job {job_id} completed successfully!")
-        print(f"Results saved to: ../../results/experimental_data/{surr_method}/{session}/{context}/{job_id}/")
+        print(f"Pattern size {pattern_size} completed successfully!")
+        print(f"Results saved to: ../../results/experimental_data/{surr_method}/{session}/{context}/{pattern_size}/")
 
 
 if __name__ == "__main__":

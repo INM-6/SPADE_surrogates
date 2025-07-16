@@ -21,15 +21,7 @@ import quantities as pq
 from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import (
     load_configuration, load_experimental_data, apply_firing_rate_threshold, extract_spade_parameters
 )
-from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences import (
-    extract_trial_count_from_concatenated_data, calculate_dynamic_abs_min_occ
-)
 from elephant.spade import spade
-
-
-# =============================================================================
-# CORE FUNCTIONS
-# =============================================================================
 
 def parse_arguments():
     """Parse command line arguments."""
@@ -206,26 +198,13 @@ def search_downward(spike_trains, params, start_min_occ, target, min_threshold, 
     return best_min_occ
 
 
-def recalculate_memory_threshold(session, epoch, trialtype, spike_trains, config):
-    """Recalculate dynamic memory protection threshold."""
-    try:
-        n_trials = extract_trial_count_from_concatenated_data(spike_trains, config)
-        if n_trials is None:
-            return calculate_dynamic_abs_min_occ(session, epoch, trialtype, 'original')
-        
-        n_trials = max(3, min(n_trials, 1000))  # Reasonable bounds
-        threshold = math.ceil(n_trials / 3.0)
-        print(f"Memory threshold: {n_trials} trials → {threshold}")
-        return threshold
-        
-    except Exception as e:
-        print(f"Error calculating threshold: {e}")
-        return calculate_dynamic_abs_min_occ(session, epoch, trialtype, 'original')
+def get_memory_threshold_from_params(pattern_params):
+    """Get dynamic memory protection threshold from parameter dictionary."""
+    # All pattern sizes should have the same dynamic_abs_min_occ for the same context
+    # So we can take it from any of them
+    first_pattern = next(iter(pattern_params.values()))
+    return first_pattern.get('dynamic_abs_min_occ', 10)  # Fallback to 10 if not found
 
-
-# =============================================================================
-# MAIN CALIBRATION
-# =============================================================================
 
 def calibrate_session_context(session, context):
     """Main calibration function."""
@@ -239,11 +218,11 @@ def calibrate_session_context(session, context):
     if session not in param_dict or context not in param_dict[session]:
         raise ValueError(f"Session {session} context {context} not found")
     
-    jobs = param_dict[session][context]
+    pattern_params = param_dict[session][context]  # Now indexed by pattern_size
     winlen = config['winlen']
     target_patterns = 2 * winlen
     
-    print(f"Target: ≥{target_patterns} patterns (2×winlen), Jobs: {len(jobs)}")
+    print(f"Target: ≥{target_patterns} patterns (2×winlen), Pattern sizes: {list(pattern_params.keys())}")
     
     # Load spike train data
     epoch, trialtype = context.split('_', 1)
@@ -252,23 +231,22 @@ def calibrate_session_context(session, context):
     
     print(f"Data: {len(spike_trains)} spike trains")
     
-    # Calculate memory protection threshold
-    memory_threshold = recalculate_memory_threshold(session, epoch, trialtype, spike_trains, config)
-    print(f"Memory protection: ≥{memory_threshold}")
+    # Get memory protection threshold from parameter dictionary (already calculated)
+    memory_threshold = get_memory_threshold_from_params(pattern_params)
+    print(f"Memory protection: ≥{memory_threshold} (from param_dict)")
     
-    # Calibrate each job
+    # Calibrate each pattern size
     calibrated_params = {}
     
-    for job_id in sorted(jobs.keys()):
-        job_params = jobs[job_id]
-        pattern_size = job_params.get('min_spikes', 2)
-        original_min_occ = job_params['min_occ']
+    for pattern_size in sorted(pattern_params.keys()):
+        pattern_job_params = pattern_params[pattern_size]
+        original_min_occ = pattern_job_params['min_occ']
         
-        print(f"\n🎯 JOB {job_id} (Pattern Size {pattern_size})")
+        print(f"\n🎯 PATTERN SIZE {pattern_size}")
         print(f"Original min_occ: {original_min_occ}")
         
         # Extract SPADE parameters
-        spade_params = extract_spade_parameters(config, job_params)
+        spade_params = extract_spade_parameters(config, pattern_job_params)
         if spade_params.get('min_occ') != original_min_occ:
             print(f"⚠️ Using param_dict min_occ ({original_min_occ}) over extracted ({spade_params.get('min_occ')})")
             spade_params['min_occ'] = original_min_occ
@@ -283,15 +261,15 @@ def calibrate_session_context(session, context):
         )
         
         # Store results
-        calibrated_job_params = job_params.copy()
+        calibrated_job_params = pattern_job_params.copy()
         calibrated_job_params.update({
             'min_occ': optimal_min_occ,
             'calibration_applied': True,
             'original_min_occ': original_min_occ,
-            'target_patterns': target_patterns,
-            'dynamic_abs_min_occ': memory_threshold
+            'target_patterns': target_patterns
+            # Keep existing dynamic_abs_min_occ from original params
         })
-        calibrated_params[job_id] = calibrated_job_params
+        calibrated_params[pattern_size] = calibrated_job_params
         
         # Summary
         change = optimal_min_occ - original_min_occ
@@ -303,7 +281,6 @@ def calibrate_session_context(session, context):
     
     return calibrated_params
 
-
 def main():
     """Main execution."""
     args = parse_arguments()
@@ -311,17 +288,11 @@ def main():
     print(f"🚀 Starting calibration: {args.session} {args.context}")
     
     try:
-        # Load configuration to get surrogate method
-        config = load_configuration()
-        surr_method = config.get('surr_method', 'trial_shifting')
-        
-        print(f"Surrogate method from config: {surr_method}")
-        
         # Run calibration
         calibrated_params = calibrate_session_context(args.session, args.context)
         
-        # Save results with correct path structure including surrogate method
-        output_dir = f'../../results/empirical_calibration/{surr_method}/{args.session}'
+        # Save results (no surrogate method in path structure)
+        output_dir = f'../../results/empirical_calibration/{args.session}'
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f'{args.context}_calibrated_params.npy')
         
@@ -346,7 +317,7 @@ def main():
         avg_change_pct = ((np.mean(calibrated_values) - np.mean(original_values)) / np.mean(original_values)) * 100
         
         print(f"\n🎉 CALIBRATION COMPLETE")
-        print(f"Jobs: {len(calibrated_params)} ({n_reduced} reduced, {n_increased} increased, {n_unchanged} unchanged)")
+        print(f"Pattern sizes: {len(calibrated_params)} ({n_reduced} reduced, {n_increased} increased, {n_unchanged} unchanged)")
         print(f"Average change: {avg_change_pct:+.1f}%")
         print(f"Final output: {output_file}")
         

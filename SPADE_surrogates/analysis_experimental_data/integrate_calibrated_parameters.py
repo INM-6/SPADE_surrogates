@@ -23,7 +23,6 @@ def integrate_calibrated_parameters():
     sessions = config['sessions']
     epochs = config['epochs']
     trialtypes = config['trialtypes']
-    surr_method = config['surr_method']
     
     # Load original parameter dictionary
     original_param_dict = np.load('param_dict.npy', allow_pickle=True).item()
@@ -42,7 +41,7 @@ def integrate_calibrated_parameters():
     }
     
     print(f"Looking for calibrated parameters...")
-    print(f"Expected pattern: ../../results/empirical_calibration/{surr_method}/[session]/[context]_calibrated_params.npy")
+    print(f"Expected pattern: ../../results/empirical_calibration/[session]/[context]_calibrated_params.npy")
     print()
     
     # Process each session and context
@@ -64,8 +63,8 @@ def integrate_calibrated_parameters():
             original_job_count = len(calibrated_param_dict[session][context])
             calibration_stats['total_jobs'] += original_job_count
             
-            # Look for calibrated parameters file
-            calibration_file = f'../../results/empirical_calibration/{surr_method}/{session}/{context}_calibrated_params.npy'
+            # Look for calibrated parameters file (no surrogate method in path)
+            calibration_file = f'../../results/empirical_calibration/{session}/{context}_calibrated_params.npy'
             
             if os.path.exists(calibration_file):
                 try:

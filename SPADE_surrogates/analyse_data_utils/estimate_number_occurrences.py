@@ -1,5 +1,5 @@
 """
-Occurrence estimation for SPADE analysis.
+Improved occurrence estimation for SPADE analysis.
 
 This module estimates the minimum number of occurrences for patterns of different sizes
 using an improved non-stationary Poisson model with geometric mean rate estimation.
@@ -81,9 +81,9 @@ def extract_trial_count_from_concatenated_data(spike_trains, config_params=None)
             
         except Exception:
             pass
-                    
-    except Exception:
-        pass
+    
+    # Method 3: Look for regular patterns in spike timing - REMOVED
+    # This method was unreliable and could give false positives
     
     return None
 
@@ -560,8 +560,7 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
             'n_surr': config_params['n_surr'],
             'dither': config_params['dither'],
             'spectrum': config_params['spectrum'],
-            'abs_min_spikes': config_params['abs_min_spikes'],
-            'surr_method': config_params['surr_method']
+            'abs_min_spikes': config_params['abs_min_spikes']
         }
         
         # Store parameters using pattern_size as key
@@ -726,7 +725,7 @@ def execute_occurrence_estimation(analyze_original=True):
     required_params = [
         'sessions', 'epochs', 'trialtypes', 'binsize',
         'percentile_poiss', 'abs_min_spikes', 'winlen', 'spectrum', 'dither',
-        'n_surr', 'alpha', 'correction', 'psr_param', 'unit', 'surr_method'
+        'n_surr', 'alpha', 'correction', 'psr_param', 'unit'
     ]
     
     config_params = {}
