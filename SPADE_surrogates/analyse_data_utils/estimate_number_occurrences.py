@@ -1,5 +1,5 @@
 """
-Improved occurrence estimation for SPADE analysis.
+Occurrence estimation for SPADE analysis.
 
 This module estimates the minimum number of occurrences for patterns of different sizes
 using an improved non-stationary Poisson model with geometric mean rate estimation.
@@ -70,8 +70,9 @@ def extract_trial_count_from_concatenated_data(spike_trains, config_params=None)
             sample_st = spike_trains[0]
             total_duration = sample_st.t_stop - sample_st.t_start
             
-            # Epoch duration is always 500ms for this experimental setup
-            estimated_epoch_duration = 0.5 * pq.s  # 500ms epochs
+            # Get epoch duration from config (defaults to 500ms)
+            epoch_duration = config_params.get('epoch_duration', 0.5)
+            estimated_epoch_duration = epoch_duration * pq.s
             trial_duration = estimated_epoch_duration + sep
             
             # Estimate number of trials
@@ -80,29 +81,6 @@ def extract_trial_count_from_concatenated_data(spike_trains, config_params=None)
             
         except Exception:
             pass
-    
-    # Method 3: Look for regular patterns in spike timing
-    try:
-        sample_st = spike_trains[0]
-        if len(sample_st) > 10:  # Need sufficient spikes for pattern detection
-            spike_times = np.array(sample_st.times)
-            
-            # Look for large gaps that might indicate trial boundaries
-            isi = np.diff(spike_times)
-            
-            if len(isi) > 0:
-                # Find ISIs that are much larger than typical
-                median_isi = np.median(isi)
-                # Use a more conservative threshold for gap detection
-                gap_threshold = max(0.1, 5 * median_isi)  # At least 100ms or 5x median ISI
-                large_gaps = isi > gap_threshold
-                
-                # Number of trials ≈ number of large gaps + 1
-                potential_trials = np.sum(large_gaps) + 1
-                
-                # Sanity check: should be reasonable number for experiments
-                if 3 <= potential_trials <= 500:
-                    return int(potential_trials)
                     
     except Exception:
         pass
@@ -402,10 +380,10 @@ def _calculate_min_occurrence_threshold(rate_ref, binsize, pattern_size, winlen,
     return int(count_values[threshold_idx])
 
 
-def _store_analysis_parameters(param_dict, session, context, job_id, 
+def _store_analysis_parameters(param_dict, session, context, pattern_size, 
                               analysis_params, process='original'):
     """
-    Store analysis parameters for a specific job.
+    Store analysis parameters for a specific pattern size.
     
     Parameters
     ----------
@@ -415,8 +393,8 @@ def _store_analysis_parameters(param_dict, session, context, job_id,
         Session identifier
     context : str
         Analysis context (epoch_trialtype)
-    job_id : int
-        Job counter/identifier
+    pattern_size : int
+        Pattern size (replaces job_id)
     analysis_params : dict
         Dictionary containing all analysis parameters
     process : str
@@ -428,20 +406,21 @@ def _store_analysis_parameters(param_dict, session, context, job_id,
     else:
         target_dict = param_dict[session][process][context]
     
-    # Store core parameters - use dynamic abs_min_occ
-    target_dict[job_id] = {
+    # Store core parameters - use dynamic abs_min_occ and pattern_size as key
+    target_dict[pattern_size] = {
         'session': session,
         'trialtype': analysis_params['trialtype'],
         'binsize': (analysis_params['binsize'] * pq.s).rescale(analysis_params['unit']),
         'epoch': analysis_params['epoch'],
         'min_spikes': analysis_params['pattern_size'],
         'max_spikes': analysis_params['pattern_size'],
-        'min_occ': max(analysis_params['min_occ'], analysis_params['dynamic_abs_min_occ'])
+        'min_occ': max(analysis_params['min_occ'], analysis_params['dynamic_abs_min_occ']),
+        'pattern_size': pattern_size  # Explicit pattern size storage
     }
     
     # Add process type for non-original data
     if process != 'original':
-        target_dict[job_id]['process'] = process
+        target_dict[pattern_size]['process'] = process
     
     # Store additional analysis parameters
     additional_params = [
@@ -451,11 +430,11 @@ def _store_analysis_parameters(param_dict, session, context, job_id,
     
     for param in additional_params:
         if param in analysis_params:
-            target_dict[job_id][param] = analysis_params[param]
+            target_dict[pattern_size][param] = analysis_params[param]
 
 
 def _process_single_condition(process, session, epoch, trialtype, config_params, 
-                             excluded_neurons, param_dict, job_counter):
+                             excluded_neurons, param_dict, pattern_sizes):
     """
     Process a single experimental condition (session, epoch, trialtype combination).
     
@@ -475,13 +454,8 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
         Dictionary tracking excluded neurons per session
     param_dict : dict
         Main parameter dictionary
-    job_counter : int
-        Current job counter
-        
-    Returns
-    -------
-    int
-        Updated job counter
+    pattern_sizes : list
+        List of pattern sizes to analyze
     """
     # Calculate dynamic abs_min_occ for this specific condition
     dynamic_abs_min_occ = calculate_dynamic_abs_min_occ(session, epoch, trialtype, process)
@@ -535,15 +509,15 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     active_rates = np.array([rate for rate in all_rates if rate > 0])
     if len(active_rates) == 0:
         print(f"  Warning: No active neurons for {session} {epoch} {trialtype}")
-        return job_counter
+        return
     
     sorted_active_rates = np.sort(active_rates)
     non_stationarity = _get_non_stationarity_factor(epoch, process)
     
-    print(f"  Processing pattern sizes 2-5 (non-stationarity: {non_stationarity}, dynamic_abs_min_occ: {dynamic_abs_min_occ})")
+    print(f"  Processing pattern sizes {pattern_sizes} (non-stationarity: {non_stationarity}, dynamic_abs_min_occ: {dynamic_abs_min_occ})")
     
-    # Process each pattern size from 2 to 5 (inclusive)
-    for pattern_size in range(2, 6):
+    # Process each pattern size
+    for pattern_size in pattern_sizes:
         # Calculate reference rate using geometric mean of top neurons
         if len(sorted_active_rates) >= pattern_size:
             rate_ref = gmean(sorted_active_rates[-pattern_size:])
@@ -590,20 +564,17 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
             'surr_method': config_params['surr_method']
         }
         
-        # Store parameters
+        # Store parameters using pattern_size as key
         _store_analysis_parameters(
             param_dict=param_dict,
             session=session,
             context=context,
-            job_id=job_counter,
+            pattern_size=pattern_size,
             analysis_params=analysis_params,
             process=process
         )
         
-        job_counter += 1
         print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, dynamic_abs_min_occ)}")
-    
-    return job_counter
 
 
 def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, processes=('original',)):
@@ -615,7 +586,7 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
     calculated as 1/3 of the number of trials (ceiled) for each condition.
     
     NOTE: In this experimental setup:
-    - Each epoch is always 500ms duration
+    - Each epoch duration is configurable (default 500ms)
     - Trial count depends on the trialtype (not session-specific)
     - Default trial count is 30 if cannot be determined
 
@@ -640,13 +611,18 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
         - param_dict: Dictionary containing analysis parameters and thresholds
         - excluded_neurons: Array of neuron IDs excluded from analysis
     """
+    # Get pattern sizes from config
+    pattern_sizes = config_params.get('pattern_sizes', [2, 3, 4])
+    
     print("Starting pattern occurrence estimation with dynamic abs_min_occ...")
     print(f"Sessions: {sessions}")
     print(f"Epochs: {epochs}")
     print(f"Trial types: {trialtypes}")
+    print(f"Pattern sizes: {pattern_sizes}")
     print(f"Processes: {processes}")
+    print(f"Epoch duration: {config_params.get('epoch_duration', 0.5)}s")
     print("abs_min_occ will be calculated dynamically as ceil(n_trials/3) for each condition")
-    print("NOTE: Trial count is trialtype-specific (500ms epochs, default=30 trials)")
+    print("NOTE: Trial count is trialtype-specific with configurable epoch duration, default=30 trials")
     
     # Initialize storage
     param_dict = {}
@@ -674,14 +650,12 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
             if firing_rate_threshold is not None:
                 excluded_neurons[session] = np.array([])
             
-            job_counter = 0
-            
             # Process each epoch and trial type
             for epoch in epochs:
                 print(f"  Epoch: {epoch}")
                 
                 for trialtype in trialtypes:
-                    job_counter = _process_single_condition(
+                    _process_single_condition(
                         process=process,
                         session=session,
                         epoch=epoch,
@@ -689,7 +663,7 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
                         config_params=config_params,
                         excluded_neurons=excluded_neurons,
                         param_dict=param_dict,
-                        job_counter=job_counter
+                        pattern_sizes=pattern_sizes
                     )
             
             # Clean up excluded neurons list
@@ -763,6 +737,9 @@ def execute_occurrence_estimation(analyze_original=True):
     
     # Add optional parameters
     config_params['firing_rate_threshold'] = config.get('firing_rate_threshold')
+    config_params['pattern_sizes'] = config.get('pattern_sizes', [2, 3, 4])
+    config_params['reduced_sessions'] = config.get('reduced_sessions', ['i140703s001', 'l101210s001'])
+    config_params['epoch_duration'] = config.get('epoch_duration', 0.5)
     
     # Note: abs_min_occ is no longer used from config - it's calculated dynamically
     print("Note: abs_min_occ from config file is ignored - using dynamic calculation instead")

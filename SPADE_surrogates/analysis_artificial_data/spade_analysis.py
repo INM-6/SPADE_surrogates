@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Simplified SPADE analysis script for artificial data.
+Simplified SPADE analysis script for artificial data with calibrated parameters.
 
 This script uses the shared utility functions to perform SPADE analysis
 on artificial spike train data with reproducible seeding and MPI parallelization.
 """
 
 import numpy as np
+import os
 from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import (
     initialize_mpi,
     generate_reproducible_seed,
     parse_artificial_arguments,
     load_configuration,
-    load_job_parameters,
     validate_job_context,
     load_artificial_data,
     apply_firing_rate_threshold,
@@ -23,10 +23,56 @@ from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import (
 )
 
 
+def load_calibrated_job_parameters(session, context, job_id, process):
+    """
+    Load job parameters for artificial data, preferring calibrated parameters if available.
+    """
+    # Check if calibrated parameters exist
+    calibrated_file = 'param_dict_calibrated_integrated.npy'
+    
+    if os.path.exists(calibrated_file):
+        print(f"Loading calibrated parameters from {calibrated_file}")
+        param_dict = np.load(calibrated_file, allow_pickle=True).item()
+    else:
+        print(f"Calibrated parameters not found, using original parameters")
+        param_dict = np.load('param_dict.npy', allow_pickle=True).item()
+    
+    # Extract job parameters
+    if session not in param_dict:
+        raise ValueError(f"Session {session} not found in parameter dictionary")
+    
+    if process not in param_dict[session]:
+        raise ValueError(f"Process {process} not found for session {session}")
+    
+    if context not in param_dict[session][process]:
+        raise ValueError(f"Context {context} not found for session {session}, process {process}")
+    
+    if job_id not in param_dict[session][process][context]:
+        raise ValueError(f"Job {job_id} not found for session {session}, process {process}, context {context}")
+    
+    job_params = param_dict[session][process][context][job_id]
+    
+    # Log parameter source and values
+    if job_params.get('calibration_applied', False):
+        original_min_occ = job_params.get('original_min_occ', 'unknown')
+        current_min_occ = job_params.get('min_occ', 'unknown')
+        print(f"Using calibrated parameters for job {job_id}:")
+        print(f"  min_occ: {original_min_occ} → {current_min_occ}")
+        print(f"  calibration_applied: {job_params.get('calibration_applied', False)}")
+    else:
+        print(f"Using original parameters for job {job_id}")
+        print(f"  min_occ: {job_params.get('min_occ', 'unknown')}")
+    
+    return job_params
+
+
 def main():
     """Main execution function for artificial data analysis."""
     # Initialize MPI
     comm, rank, size = initialize_mpi()
+    
+    if rank == 0:
+        print("=== SPADE Analysis with Calibrated Parameters - Artificial Data ===")
     
     # Parse command line arguments
     args = parse_artificial_arguments()
@@ -36,45 +82,63 @@ def main():
     process = args.process
     surr_method = args.surrogate_method
     
-    print(f"Job parameters: session={session}, context={context}, "
-          f"job_id={job_id}, process={process}, surr_method={surr_method}")
+    if rank == 0:
+        print(f"Job parameters: session={session}, context={context}, "
+              f"job_id={job_id}, process={process}, surr_method={surr_method}")
     
     # Generate reproducible seed for this job and MPI rank
     random_seed = generate_reproducible_seed(session, context, job_id, surr_method, rank)
     np.random.seed(random_seed)
-    print(f"Rank {rank}: Using reproducible seed: {random_seed}")
+    if rank == 0:
+        print(f"Using reproducible seed: {random_seed}")
     
-    # Load configuration and job parameters
+    # Load configuration
     config = load_configuration()
-    job_params = load_job_parameters(session, context, job_id, process)
+    
+    # Load job parameters (calibrated if available)
+    job_params = load_calibrated_job_parameters(session, context, job_id, process)
     
     # Extract job-specific parameters
     epoch = job_params['epoch']
     trialtype = job_params['trialtype']
+    
+    if rank == 0:
+        print(f"Extracted context: epoch={epoch}, trialtype={trialtype}")
     
     # Validate job context
     validate_job_context(context, epoch, trialtype)
     
     # Load spike train data
     spike_trains, annotations_dict = load_artificial_data(session, epoch, trialtype, process)
-    print(f"Loaded {len(spike_trains)} spike trains")
+    if rank == 0:
+        print(f"Loaded {len(spike_trains)} spike trains")
     
     # Apply firing rate threshold if specified
     firing_rate_threshold = config['firing_rate_threshold']
     spike_trains = apply_firing_rate_threshold(spike_trains, session, firing_rate_threshold)
-    print(f"Using {len(spike_trains)} spike trains after filtering")
+    if rank == 0:
+        print(f"Using {len(spike_trains)} spike trains after filtering")
     
-    # Extract SPADE parameters
+    # Extract SPADE parameters (using calibrated job_params)
     spade_params = extract_spade_parameters(config, job_params)
+    
+    if rank == 0:
+        print(f"SPADE parameters:")
+        for key, value in spade_params.items():
+            print(f"  {key}: {value}")
     
     # Create loading parameters
     loading_params = create_loading_parameters(session, epoch, trialtype, config, process)
     
     # Run SPADE analysis
+    if rank == 0:
+        print(f"Starting SPADE analysis with {size} MPI ranks...")
+    
     spade_results = run_spade_analysis(spike_trains, spade_params, surr_method)
     
     # Save results (only rank 0 writes files)
     if rank == 0:
+        print(f"Saving results...")
         save_artificial_results(
             spade_results=spade_results,
             loading_params=loading_params,
@@ -92,6 +156,7 @@ def main():
             random_seed=random_seed
         )
         print(f"Job {job_id} completed successfully!")
+        print(f"Results saved to: ../../results/artificial_data/{surr_method}/{process}/{session}/{context}/{job_id}/")
 
 
 if __name__ == "__main__":

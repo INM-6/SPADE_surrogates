@@ -61,7 +61,7 @@ echo ""
 
 echo "=== Phase 1: Unlocking workflow ==="
 snakemake\
-    -s Snakefile_with_empirical_calibration --unlock \
+    --unlock \
     --configfile "${CONFIG_FILE}" \
     --cores 1
 
@@ -73,7 +73,7 @@ echo ""
 
 # Main snakemake execution with cluster submission (Snakemake 8.x syntax)
 snakemake\
-    -s Snakefile_with_empirical_calibration --jobs "${MAX_JOBS}" \
+    --jobs "${MAX_JOBS}" \
     --executor cluster-generic \
     --cluster-generic-submit-cmd "sbatch \
         --ntasks={resources.ntasks} \

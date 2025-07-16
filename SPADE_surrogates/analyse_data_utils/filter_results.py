@@ -268,6 +268,72 @@ def create_filter_params(config_params):
     }
 
 
+def save_filtered_results(output_path, patterns, loading_params, filter_params, 
+                         config_params, spade_params):
+    """
+    Save filtered SPADE results to file.
+    
+    Parameters:
+    -----------
+    output_path : str
+        Path to save the results
+    patterns : list
+        Filtered patterns
+    loading_params : dict
+        Loading parameters
+    filter_params : dict
+        Filter parameters used
+    config_params : dict
+        Configuration parameters
+    spade_params : dict
+        SPADE analysis parameters
+    """
+    # Save as a dictionary to avoid numpy array conversion issues
+    data_to_save = {
+        'patterns': patterns,
+        'loading_params': loading_params,
+        'filter_params': filter_params,
+        'config_params': config_params,
+        'spade_params': spade_params
+    }
+    
+    np.save(output_path, data_to_save, allow_pickle=True)
+    print(f'Results saved to: {output_path}')
+    print(f'  - Patterns: {len(patterns)}')
+    print(f'  - Format: Dictionary with keys:')
+    print(f'    "patterns": list of pattern dictionaries')
+    print(f'    "loading_params": dict')
+    print(f'    "filter_params": dict')
+    print(f'    "config_params": dict')
+    print(f'    "spade_params": dict')
+
+
+def load_filtered_results(filepath):
+    """
+    Load filtered SPADE results from file.
+    
+    Parameters:
+    -----------
+    filepath : str
+        Path to the saved results file
+        
+    Returns:
+    --------
+    tuple : (patterns, loading_params, filter_params, config_params, spade_params)
+        All saved data components
+    """
+    data = np.load(filepath, allow_pickle=True).item()
+    
+    # Extract components from dictionary
+    patterns = data['patterns']
+    loading_params = data.get('loading_params', {})
+    filter_params = data.get('filter_params', {})
+    config_params = data.get('config_params', {})
+    spade_params = data.get('spade_params', {})
+    
+    return patterns, loading_params, filter_params, config_params, spade_params
+
+
 def filter_spade_results(directory, annotations_path, output_path):
     """
     Main processing function for SPADE results.
@@ -328,10 +394,8 @@ def filter_spade_results(directory, annotations_path, output_path):
     # Create filter parameters
     filter_params = create_filter_params(config_params)
     
-    # Save filtered results
-    np.save(output_path, [patterns, loading_params, filter_params, 
-                         config_params, spade_params])
-    
-    print(f'Results saved to: {output_path}')
+    # Save filtered results using the new save function
+    save_filtered_results(output_path, patterns, loading_params, filter_params, 
+                         config_params, spade_params)
     
     return patterns, loading_params, filter_params, config_params, spade_params

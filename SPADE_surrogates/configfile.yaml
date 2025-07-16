@@ -1,18 +1,19 @@
-# The sessions to analyze
-#sessions : ['i140703-001','l101210-001']
+# The sessions to analyze (full list)
 sessions : ['i140613s001', 'i140616s001', 'i140617s001', 'i140627s001', 'i140701s001', 
-                         'i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
-                         'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
-                         'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
-# sessions : ['i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
-#                          'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
-#                          'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
-# sessions : ['l101108s001', 
-#                          'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
-# The 5 epochs to analyze
+            'i140702s001', 'i140703s001', 'i140704s001', 'i140718s001', 'i140725s002',
+            'l101006s002', 'l101007s001', 'l101013s002', 'l101015s001', 'l101108s001', 
+            'l101110s003', 'l101111s002', 'l101126s002', 'l101210s001', 'l110209s001']
+
+# Reduced sessions for non-trial_shifting surrogate methods
+reduced_sessions : ['i140703s001', 'l101210s001']
+# The 6 epochs to analyze
 epochs : ['start', 'cue1', 'earlydelay', 'latedelay', 'movement', 'hold']
 # The 4 trial types to analyze
 trialtypes : ['PGHF', 'PGLF' ,'SGHF', 'SGLF' ]
+# Pattern sizes to analyze (replaces job_counter-based approach)
+pattern_sizes : [2, 3, 4]
+# Epoch duration in seconds (standard for this experimental setup)
+epoch_duration : 0.5
 # Absolute (independent of the number of spikes) minimum number of occurrences of a pattern
 abs_min_occ : 10   # This value is now ignored - calculated dynamically as ceil(n_trials/3)
 # Minimum number of spikes
@@ -33,8 +34,8 @@ dither : 0.025
 n_surr : 5000
 # Significance level
 alpha : 0.05
-# Surrogate method to use
-surr_method : 'trial_shifting'
+# Surrogate methods to use (as a list for wildcards)
+surrogates : ['dither_spikes', 'dither_spikes_with_refractory_period', 'joint_isi_dithering', 'isi_dithering', 'trial_shifting', 'bin_shuffling']
 # Multitesting statistical correction
 correction : 'fdr_bh'
 # PSR parameters
@@ -51,5 +52,7 @@ seed : 0
 SNR_thresh : 2.5
 # size for removal of synchrofacts from data
 synchsize : 2
- # Number of MPI ranks for reproducible SPADE analysis
+# Number of MPI ranks for reproducible SPADE analysis
 mpi_ranks: 24
+# Enable empirical calibration
+enable_empirical_calibration: true

@@ -11,6 +11,7 @@ import yaml
 
 from generate_artificial_data import get_cv2
 from rgutils import load_processed_spike_trains
+from SPADE_surrogates.analyse_data_utils.filter_results import load_filtered_results
 
 
 def create_firing_rate_plots(axes, what_to_plot='rate'):
@@ -80,10 +81,10 @@ def create_firing_rate_plots(axes, what_to_plot='rate'):
                 neurons_per_method = {}
                 all_neurons = np.array([])
                 for surr_method in surr_methods:
-                    patterns = np.load(
-                        f'{results_path}{surr_method}/{process}/'
-                        f'{session}/{epoch}_{trialtype}/filtered_res.npy',
-                        allow_pickle=True)[0]
+                    filepath = \
+                        f'{results_path}{surr_method}/{process}/' \
+                        f'{session}/{epoch}_{trialtype}/filtered_res.npy'
+                    patterns, _, _, _, _ = load_filtered_results(filepath)
 
                     if len(patterns) == 0:
                         neurons_per_method[surr_method] = np.array([])

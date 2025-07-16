@@ -1,13 +1,15 @@
 """
-Snakemake workflow for SPADE analysis on experimental data.
+Snakemake workflow for SPADE analysis with empirical parameter calibration.
 
-This workflow performs pattern mining on experimental spike train data using the
-SPADE algorithm with surrogate testing and statistical filtering.
+This workflow includes an empirical calibration step that runs SPADE without
+surrogates to find optimal min_occ values that yield > 2*winlen patterns.
 
 Workflow steps:
-1. Load configuration and estimate occurrence thresholds
-2. Run SPADE analysis on each job (session/epoch/trialtype/pattern_size combination)
-3. Filter results using Pattern Spectrum Filter (PSF) and Pattern Set Reduction (PSR)
+1. Load configuration and estimate initial occurrence thresholds
+2. Run empirical calibration (SPADE without surrogates) for each session/context
+3. Integrate calibrated parameters into main parameter dictionary
+4. Run full SPADE analysis with calibrated parameters
+5. Filter results using Pattern Spectrum Filter (PSF) and Pattern Set Reduction (PSR)
 """
 
 import numpy as np
@@ -58,14 +60,11 @@ MPI_RANKS = config.get('mpi_ranks', 24)  # Default to 24 ranks if not specified
 
 print(f"MPI configuration: Using {MPI_RANKS} ranks for all SPADE analyses")
 
-# =============================================================================
-# CONFIGURATION PARAMETERS
-# =============================================================================
-
-# Extract configuration parameters (same as original)
+# Extract configuration parameters
 epochs = config['epochs']
 trialtypes = config['trialtypes']
 sessions = config['sessions']
+reduced_sessions = config['reduced_sessions']
 abs_min_occ = config['abs_min_occ']
 binsize = config['binsize']
 percentile_poiss = config['percentile_poiss']
@@ -80,139 +79,352 @@ correction = config['correction']
 psr_param = config['psr_param']
 unit = config['unit']
 firing_rate_threshold = config['firing_rate_threshold']
-surr_method = config['surr_method']
+pattern_sizes = config.get('pattern_sizes', [2, 3, 4])
+surrogates = config.get('surrogates', ['trial_shifting'])
+epoch_duration = config.get('epoch_duration', 0.5)
 
 # Additional parameters for experimental data analysis
 SNR_thresh = config['SNR_thresh']
 synchsize = config['synchsize']
 sep = 2 * winlen * (binsize * pq.s).rescale(unit)
 
-# Create contexts list (same as original)
+# Create contexts list
 contexts = [epoch + '_' + tt for epoch in config['epochs'] for tt in config['trialtypes']]
+
+# Enable empirical calibration by default
+ENABLE_EMPIRICAL_CALIBRATION = config.get('enable_empirical_calibration', True)
+
+# Function to get sessions based on surrogate method
+def get_sessions_for_surrogate(surrogate_method):
+    """Get sessions based on surrogate method"""
+    if surrogate_method == 'trial_shifting':
+        return sessions  # All sessions for trial_shifting
+    else:
+        return reduced_sessions  # Limited sessions for other methods
 
 print(f"Analyzing experimental data:")
 print(f"  Sessions: {len(sessions)} ({sessions})")
+print(f"  Reduced sessions: {len(reduced_sessions)} ({reduced_sessions})")
 print(f"  Epochs: {len(epochs)} ({epochs})")
 print(f"  Trial types: {len(trialtypes)} ({trialtypes})")
-print(f"  Surrogate method: {surr_method}")
-print(f"  Additional parameters: SNR_thresh={SNR_thresh}, synchsize={synchsize}")
+print(f"  Pattern sizes: {pattern_sizes}")
+print(f"  Surrogate methods: {surrogates}")
+print(f"  Epoch duration: {epoch_duration}s")
+print(f"  Empirical calibration: {ENABLE_EMPIRICAL_CALIBRATION}")
 
 # =============================================================================
 # PARAMETER ESTIMATION
 # =============================================================================
 
-print("Estimating minimum occurrence thresholds for experimental data...")
-
-# Create the parameter dictionary (exactly as in original)
-param_dict, excluded_neurons = execute_occurrence_estimation(
-    analyze_original=True
-)
-
-print("Parameter dictionary created successfully")
+print("Parameter estimation will be done as a rule, not during workflow setup")
 
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
-def get_job_results_for_context(wildcards):
-    """
-    Get all job result files for a specific context (session/context combination).
-    
-    This function matches the original select_job_ids_context function exactly.
-    For experimental data, the structure is session/context (no process level).
-    """
+def get_pattern_results_for_context(wildcards):
+    """Get all pattern result files for a specific context."""
+    param_dict = np.load('param_dict.npy', allow_pickle=True).item()
     return [
-        f'../../results/experimental_data/{wildcards.surr_method}'
-        f'/{wildcards.session}/{wildcards.context}/{job_id}/results.npy'
-        for job_id in param_dict[wildcards.session][wildcards.context]
+        f'../../results/experimental_data/{wildcards.surrogate_method}'
+        f'/{wildcards.session}/{wildcards.context}/{pattern_size}/results.npy'
+        for pattern_size in param_dict[wildcards.session][wildcards.context]
     ]
+
+def get_calibration_files_for_session(wildcards):
+    """Get all calibration files for a specific session."""
+    return [
+        f'../../results/empirical_calibration/{wildcards.surrogate_method}'
+        f'/{wildcards.session}/{context}_calibrated_params.npy'
+        for context in contexts
+    ]
+
+def get_all_analysis_results():
+    """Get all analysis result files across all surrogate methods and sessions."""
+    all_results = []
+    for surrogate_method in surrogates:
+        current_sessions = get_sessions_for_surrogate(surrogate_method)
+        for session in current_sessions:
+            for context in contexts:
+                for pattern_size in pattern_sizes:
+                    all_results.append(
+                        f'../../results/experimental_data/{surrogate_method}/{session}'
+                        f'/{context}/{pattern_size}/results.npy'
+                    )
+    return all_results
+
+def get_all_filtered_results():
+    """Get all filtered result files across all surrogate methods and sessions."""
+    all_filtered = []
+    for surrogate_method in surrogates:
+        current_sessions = get_sessions_for_surrogate(surrogate_method)
+        for session in current_sessions:
+            for context in contexts:
+                all_filtered.append(
+                    f'../../results/experimental_data/{surrogate_method}/{session}'
+                    f'/{context}/filtered_res.npy'
+                )
+    return all_filtered
+
+def get_all_calibration_results():
+    """Get all calibration result files if calibration is enabled."""
+    if not ENABLE_EMPIRICAL_CALIBRATION:
+        return []
+    
+    all_calibration = []
+    for surrogate_method in surrogates:
+        current_sessions = get_sessions_for_surrogate(surrogate_method)
+        for session in current_sessions:
+            for context in contexts:
+                all_calibration.append(
+                    f'../../results/empirical_calibration/{surrogate_method}/{session}'
+                    f'/{context}_calibrated_params.npy'
+                )
+    return all_calibration
 
 # =============================================================================
 # SNAKEMAKE RULES
 # =============================================================================
 
-# Rule to collect all the results (same as original)
+# Rule to collect all the results
 rule all:
     input:
+        # Parameter dictionary
+        'param_dict.npy',
+        'excluded_neurons.npy',
+        # Empirical calibration results (if enabled)
+        get_all_calibration_results(),
+        # Parameter integration (if calibration enabled)
+        (['param_dict_calibrated_integrated.npy'] if ENABLE_EMPIRICAL_CALIBRATION else []),
         # All individual analysis results
-        [f'../../results/experimental_data/{surr_method}/{session}/{context}'
-         f'/{job_id}/results.npy'
-         for session in sessions for context in contexts
-         for job_id in param_dict[session][context]] + 
+        get_all_analysis_results(),
         # All filtered results
-        [f'../../results/experimental_data/{surr_method}/{session}'
-         f'/{context}/filtered_res.npy'
-         for context in contexts for session in sessions]
+        get_all_filtered_results()
     message:
-        "SPADE analysis workflow for experimental data completed successfully!"
+        "SPADE analysis workflow with empirical calibration completed successfully!"
 
-# Rule to store the parameter dictionary
-rule create_parameter_dict:
+# Rule to estimate occurrence thresholds and create parameter dictionary
+rule estimate_occurrences:
     input:
         '../configfile.yaml'
     output:
         'param_dict.npy',
         'excluded_neurons.npy'
     resources:
-        **get_rule_resources("create_parameter_dict")
+        **get_rule_resources("estimate_occurrences")
     message:
-        "Creating parameter dictionary with occurrence thresholds"
-    run:
-        np.save('./param_dict.npy', param_dict)
-        np.save('./excluded_neurons.npy', excluded_neurons)
-        print(f"Saved parameter dictionary and excluded neurons")
+        "Estimating occurrence thresholds and creating parameter dictionary"
+    shell:
+        """
+        echo "Creating parameter dictionary with occurrence thresholds"
+        echo "Activating virtual environment..."
+        source /users/bouss/spade_env/bin/activate
+        
+        python -c "
+from SPADE_surrogates.analyse_data_utils.estimate_number_occurrences import execute_occurrence_estimation
+import numpy as np
 
-# Rule to run the SPADE analysis
-rule analyze_data:
+print('Executing occurrence estimation...')
+param_dict, excluded_neurons = execute_occurrence_estimation(analyze_original=True)
+
+print('Saving parameter dictionary and excluded neurons...')
+np.save('./param_dict.npy', param_dict)
+np.save('./excluded_neurons.npy', excluded_neurons)
+print('Parameter dictionary and excluded neurons saved successfully!')
+"
+        
+        echo "Parameter dictionary creation completed"
+        """
+
+# Rule for empirical parameter calibration
+rule empirical_calibration:
     input:
         parameter_file='param_dict.npy',
         excluded_neurons='excluded_neurons.npy',
-        script='spade_analysis.py'
+        script='empirical_parameter_calibration.py'
     output:
-        '../../results/experimental_data/{surr_method}/{session}/{context}/{job_id}/results.npy'
+        '../../results/empirical_calibration/{surrogate_method}/{session}/{context}_calibrated_params.npy'
     resources:
-        **get_rule_resources("analyze_data")
+        ntasks=1,              # Single task only
+        cpus_per_task=1,       # Single CPU only  
+        time="01:30:00",       # Increased time since no parallelization
+        mem="16G",             # Increased memory for single process
+        partition=default_cluster["partition"]
+    log:
+        "logs/empirical_calibration/{surrogate_method}_{session}_{context}.log"
     message:
-        "Running SPADE analysis: {wildcards.session} {wildcards.context} job {wildcards.job_id}"
+        "Empirical calibration (original data only): {wildcards.session} {wildcards.context} [{wildcards.surrogate_method}]"
     shell:
         """
-        echo "Starting SPADE analysis for experimental data"
+        # Redirect all output to log file
+        exec > {log} 2>&1
+        
+        # Enable debugging
+        set -e  # Exit on any error
+        set -x  # Print commands as they execute
+        
+        echo "=== Starting empirical parameter calibration ==="
         echo "Session: {wildcards.session}"
         echo "Context: {wildcards.context}"
-        echo "Job ID: {wildcards.job_id}"
-        echo "Surrogate method: {wildcards.surr_method}"
-        echo "MPI ranks: {MPI_RANKS}"
+        echo "Surrogate method: {wildcards.surrogate_method}"
+        echo "Working directory: $(pwd)"
+        echo "Date: $(date)"
+        echo "Expected output: {output}"
+        echo "Note: Running on original data without surrogates"
+        
+        # Check input files
+        echo "=== Checking input files ==="
+        ls -la {input.parameter_file} {input.excluded_neurons} {input.script}
+        
+        # Create output directory
+        echo "=== Creating output directory ==="
+        mkdir -p $(dirname {output})
+        echo "Output directory created: $(dirname {output})"
+        
+        # Check virtual environment
+        echo "=== Checking virtual environment ==="
+        if [ ! -f /users/bouss/spade_env/bin/activate ]; then
+            echo "ERROR: Virtual environment not found at /users/bouss/spade_env/bin/activate"
+            exit 1
+        fi
+        
+        echo "Activating virtual environment..."
+        source /users/bouss/spade_env/bin/activate
+        
+        echo "Python executable: $(which python)"
+        echo "Python version: $(python --version)"
+        
+        # Verify the surrogate method matches what the script will use
+        echo "=== Verifying surrogate method ==="
+        python -c "
+from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import load_configuration
+config = load_configuration()
+surr_method = config.get('surr_method', 'trial_shifting')
+print(f'Config surrogate method: {{surr_method}}')
+print(f'Snakemake wildcard: {wildcards.surrogate_method}')
+if surr_method != '{wildcards.surrogate_method}':
+    print('ERROR: Surrogate method mismatch!')
+    exit(1)
+else:
+    print('✅ Surrogate methods match')
+"
+        
+        # Run the calibration script
+        echo "=== Running calibration script ==="
+        python {input.script} "{wildcards.session}" "{wildcards.context}"
+        
+        # Check if output was created
+        echo "=== Checking output ==="
+        if [ -f {output} ]; then
+            echo "✅ Output file created successfully: {output}"
+            ls -la {output}
+            file_size=$(stat -c%s {output})
+            echo "File size: $file_size bytes"
+            if [ $file_size -lt 100 ]; then
+                echo "⚠️  WARNING: Output file seems unusually small"
+            fi
+        else
+            echo "❌ ERROR: Output file not created: {output}"
+            echo "Contents of output directory:"
+            ls -la $(dirname {output}) || echo "Output directory does not exist"
+            echo "Contents of parent directory:"
+            ls -la $(dirname $(dirname {output})) || echo "Parent directory does not exist"
+            exit 1
+        fi
+        
+        echo "=== Empirical calibration completed successfully ==="
+        """
+
+# Rule to integrate all calibrated parameters
+rule integrate_calibrated_parameters:
+    input:
+        calibration_files=lambda wildcards: get_all_calibration_results(),
+        script='integrate_calibrated_parameters.py'
+    output:
+        'param_dict_calibrated_integrated.npy'
+    resources:
+        ntasks=1,
+        cpus_per_task=1,
+        time="00:15:00",
+        mem="4G",
+        partition=default_cluster["partition"]
+    message:
+        "Integrating calibrated parameters into main dictionary"
+    shell:
+        """
+        echo "Integrating all calibrated parameters"
+        echo "Source files: {input.calibration_files}"
         echo "Activating virtual environment..."
         
         source /users/bouss/spade_env/bin/activate
         
-        mpirun -n {MPI_RANKS} python spade_analysis.py \
-            {wildcards.job_id} \
+        python integrate_calibrated_parameters.py
+        
+        echo "Parameter integration completed"
+        """
+
+# Rule to run the SPADE analysis (depends on calibration if enabled)
+rule analyze_data:
+    input:
+        parameter_file='param_dict.npy',
+        excluded_neurons='excluded_neurons.npy',
+        calibrated_params='param_dict_calibrated_integrated.npy' if ENABLE_EMPIRICAL_CALIBRATION else [],
+        script='spade_analysis.py'
+    output:
+        '../../results/experimental_data/{surrogate_method}/{session}/{context}/{pattern_size}/results.npy'
+    resources:
+        **get_rule_resources("analyze_data")
+    message:
+        "Running SPADE analysis: {wildcards.session} {wildcards.context} pattern_size {wildcards.pattern_size} [{wildcards.surrogate_method}]"
+    shell:
+        """
+        echo "Starting SPADE analysis with empirically calibrated parameters"
+        echo "Session: {wildcards.session}"
+        echo "Context: {wildcards.context}"
+        echo "Pattern size: {wildcards.pattern_size}"
+        echo "Surrogate method: {wildcards.surrogate_method}"
+        echo "MPI ranks: {MPI_RANKS}"
+        
+        # Check if calibrated parameters exist
+        if [ -f param_dict_calibrated_integrated.npy ]; then
+            echo "✅ Using calibrated parameters"
+            ls -la param_dict_calibrated_integrated.npy
+        else
+            echo "⚠️ Calibrated parameters not found, using original"
+            ls -la param_dict.npy
+        fi
+        
+        echo "Activating virtual environment..."
+        source /users/bouss/spade_env/bin/activate
+        
+        echo "Running SPADE analysis..."
+        mpirun -n {MPI_RANKS} python {input.script} \
+            {wildcards.pattern_size} \
             {wildcards.context} \
             {wildcards.session} \
-            {wildcards.surr_method}
+            {wildcards.surrogate_method}
         
-        echo "SPADE analysis completed for job {wildcards.job_id}"
+        echo "SPADE analysis completed for pattern size {wildcards.pattern_size}"
         """
 
 # Rule to apply PSF and PSR filtering
 rule filter_results:
     input:
-        results=get_job_results_for_context,
+        results=get_pattern_results_for_context,
         script='filter_results.py'
     output:
-        '../../results/experimental_data/{surr_method}/{session}/{context}/filtered_res.npy'
+        '../../results/experimental_data/{surrogate_method}/{session}/{context}/filtered_res.npy'
     resources:
         **get_rule_resources("filter_results")
     message:
-        "Filtering results: {wildcards.session} {wildcards.context}"
+        "Filtering results: {wildcards.session} {wildcards.context} [{wildcards.surrogate_method}]"
     shell:
         """
-        echo "Starting result filtering for experimental data"
+        echo "Starting result filtering"
         echo "Session: {wildcards.session}"
         echo "Context: {wildcards.context}"
-        echo "Surrogate method: {wildcards.surr_method}"
-        echo "Number of job results to merge: $(echo {input.results} | wc -w)"
+        echo "Surrogate method: {wildcards.surrogate_method}"
+        echo "Number of pattern results to merge: $(echo {input.results} | wc -w)"
         echo "Activating virtual environment..."
         
         source /users/bouss/spade_env/bin/activate
@@ -220,47 +432,7 @@ rule filter_results:
         python filter_results.py \
             {wildcards.context} \
             {wildcards.session} \
-            {wildcards.surr_method}
+            {wildcards.surrogate_method}
         
         echo "Result filtering completed"
         """
-
-# =============================================================================
-# WORKFLOW VALIDATION (OPTIONAL - DOES NOT CHANGE FUNCTIONALITY)
-# =============================================================================
-
-def validate_experimental_workflow():
-    """Optional validation function for experimental data workflow."""
-    print("\n=== Experimental Data Workflow Validation ===")
-    
-    total_jobs = 0
-    for session in sessions:
-        for context in contexts:
-            if session in param_dict and context in param_dict[session]:
-                n_jobs = len(param_dict[session][context])
-                total_jobs += n_jobs
-                print(f"  {session} {context}: {n_jobs} jobs")
-    
-    print(f"Total analysis jobs: {total_jobs}")
-    
-    # Additional validation for experimental data specific parameters
-    print(f"SNR threshold: {SNR_thresh}")
-    print(f"Synchrony size: {synchsize}")
-    print(f"Separation parameter: {sep}")
-    
-    if excluded_neurons is not None:
-        total_excluded = sum(len(excluded_neurons.get(session, [])) for session in sessions)
-        print(f"Total excluded neurons: {total_excluded}")
-    
-    print("=== Validation Complete ===\n")
-    
-    # Print resource configuration summary
-    print("=== Resource Configuration Summary ===")
-    print(f"Default resources: {workflow.default_resources}")
-    for rule_name in ['create_parameter_dict', 'analyze_data', 'filter_results']:
-        if rule_name in cluster_config:
-            print(f"{rule_name}: {cluster_config[rule_name]}")
-    print("=== End Resource Summary ===\n")
-
-# Run validation (optional - doesn't affect workflow)
-validate_experimental_workflow()

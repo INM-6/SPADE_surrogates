@@ -17,6 +17,7 @@ from fig_spikeloss_r2gstats import get_cv2
 from generate_artificial_data import estimate_rate_deadtime, \
     create_st_list, estimate_deadtime
 from rgutils import load_processed_spike_trains
+from SPADE_surrogates.analyse_data_utils.filter_results import load_filtered_results
 
 xlabelpad = 0.5
 ylabelpad = -0.3
@@ -467,10 +468,12 @@ def calculate_fps(surrogate_methods, sessions):
                                      surrogate + '/ppd/' + session + '/'
                                      ) if f.is_dir()]
             for result in folder_res:
-                res = np.load(result + '/filtered_res.npy', allow_pickle=True)
-                if len(res[0]) > 0:
-                    ppd_fps[surrogate] += len(res[0])
-                    list_fps.append(len(res[0]))
+                filepath = result + '/filtered_res.npy'
+                # Use the new loading function
+                patterns, _, _, _, _ = load_filtered_results(filepath)
+                if len(patterns) > 0:
+                    ppd_fps[surrogate] += len(patterns)
+                    list_fps.append(len(patterns))
         print('PPD', surrogate)
         print('Number of FP-patterns:', np.sum(list_fps))
         print('Number of datasets with #FP-patterns>1:',  len(list_fps))
@@ -487,10 +490,12 @@ def calculate_fps(surrogate_methods, sessions):
                                      surrogate + '/gamma/' + session + '/'
                                      ) if f.is_dir()]
             for result in folder_res:
-                res = np.load(result + '/filtered_res.npy', allow_pickle=True)
-                if len(res[0]) > 0:
-                    gamma_fps[surrogate_methods[index]] += len(res[0])
-                    list_fps.append(len(res[0]))
+                filepath = result + '/filtered_res.npy'
+                # Use the new loading function
+                patterns, _, _, _, _ = load_filtered_results(filepath)
+                if len(patterns) > 0:
+                    gamma_fps[surrogate_methods[index]] += len(patterns)
+                    list_fps.append(len(patterns))
         print('Gamma', surrogate)
         print('Number of FP-patterns:', np.sum(list_fps))
         print('Number of datasets with #FP-patterns>1:',  len(list_fps))
@@ -530,8 +535,9 @@ def calculate_fps_rate(surrogate_methods, sessions, binsize, winlen,
                     f'../results/artificial_data/'
                     f'{surrogate}/{process}/{session}/') if f.is_dir()]
             for result in folder_res:
-                patterns = np.load(
-                    f'{result}/filtered_res.npy', allow_pickle=True)[0]
+                filepath = f'{result}/filtered_res.npy'
+                # Use the new loading function
+                patterns, _, _, _, _ = load_filtered_results(filepath)
 
                 # loading artificial data and retrieve the rate
                 behavioral_context = result.split('/')[-1]

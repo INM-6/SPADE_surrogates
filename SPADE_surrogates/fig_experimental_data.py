@@ -7,6 +7,7 @@ import numpy as np
 import quantities as pq
 import yaml
 from yaml import Loader
+from SPADE_surrogates.analyse_data_utils.filter_results import load_filtered_results
 
 
 def _load_results(results, surrogate, session_name, epoch, tt):
@@ -15,8 +16,12 @@ def _load_results(results, surrogate, session_name, epoch, tt):
     """
     directory = f'../results/experimental_data/{surrogate}/' \
         f'{results}/{session_name}/{epoch}_{tt}'
-    patterns = np.load(directory + '/filtered_res.npy', encoding='latin1',
-                       allow_pickle=True)[0]
+    filepath = directory + '/filtered_res.npy'
+    
+    # Use the new loading function from filter_results module
+    # This returns all components, but we only need patterns
+    patterns, _, _, _, _ = load_filtered_results(filepath)
+    
     return patterns
 
 
@@ -301,6 +306,27 @@ def plot_experimental_data_results(surrogates, tag_surrogates,
                           '/fig_experimental_data.eps', dpi=300)
     fig_mean_stat.savefig('../../figures/'
                           '/fig_experimental_data.png', dpi=300)
+
+
+def demonstrate_loading_all_data():
+    """
+    Example function showing how to load all saved data components.
+    This can be used when you need access to parameters and metadata.
+    """
+    # Example path
+    example_path = '../results/experimental_data/surrogate/session/context/filtered_res.npy'
+    
+    # Load all components
+    patterns, loading_params, filter_params, config_params, spade_params = \
+        load_filtered_results(example_path)
+    
+    print(f"Loaded {len(patterns)} patterns")
+    print(f"Configuration parameters: {config_params}")
+    print(f"Filter parameters: {filter_params}")
+    print(f"SPADE parameters: {spade_params}")
+    print(f"Loading parameters: {loading_params}")
+    
+    return patterns, loading_params, filter_params, config_params, spade_params
 
 
 if __name__ == "__main__":

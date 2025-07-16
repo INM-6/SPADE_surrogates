@@ -18,7 +18,7 @@ set -euo pipefail  # Exit on error, undefined vars, pipe failures
 # CONFIGURATION
 # =============================================================================
 
-# Paths (adjust these to your environment)
+# Paths (adjust these to your environpment)
 VIRTUAL_ENV_PATH="/users/bouss/spade_env/bin/activate"
 CONFIG_FILE="../configfile.yaml" 
 LOG_DIR="logs"
