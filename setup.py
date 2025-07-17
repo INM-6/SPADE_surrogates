@@ -37,6 +37,15 @@ setup(
         'matplotlib>=3.5.0',
         'seaborn>=0.11.0',
         'pandas>=1.3.0',
+        # ipython>=8.25.0
+        'nixio>=1.5.3',
+        'odML>=1.5.0',
+        'pip>=125.1.1',
+        'scikit-learn>=1.5.0',
+        'setuptools>=66.1.1',
+        'snakemake-executor-plugin-cluster-generic>=1.0.9',
+        #SPADE_surrogates>=1.0.0   /users/bouss/spade/SPADE_surrogates
+        'statsmodels>=0.14.2'
     ],
     
     extras_require={
@@ -60,8 +69,6 @@ setup(
             'plotly>=5.0.0',
         ],
         'analysis': [
-            'scikit-learn>=1.0.0',
-            'statsmodels>=0.13.0',
             'networkx>=2.6.0',
             'h5py>=3.6.0',
             'tqdm>=4.62.0',
