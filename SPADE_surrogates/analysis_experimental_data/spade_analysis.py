@@ -65,10 +65,21 @@ def load_calibrated_job_parameters(session, context, pattern_size):
     if context not in param_dict[session]:
         raise ValueError(f"Context {context} not found for session {session}")
     
-    if pattern_size not in param_dict[session][context]:
-        raise ValueError(f"Pattern size {pattern_size} not found for session {session}, context {context}")
+    # Get job parameters directly by pattern_size key
+    jobs = param_dict[session][context]
     
-    job_params = param_dict[session][context][pattern_size]
+    if pattern_size in jobs:
+        job_params = jobs[pattern_size]
+    else:
+        # Fallback: search by min_spikes if pattern_size key doesn't exist
+        job_params = None
+        for job_id, job_data in jobs.items():
+            if job_data.get('min_spikes', 2) == pattern_size:
+                job_params = job_data
+                break
+        
+        if job_params is None:
+            raise ValueError(f"No job found with pattern size {pattern_size} for session {session}, context {context}")
     
     # Log parameter source and values
     if job_params.get('calibration_applied', False):

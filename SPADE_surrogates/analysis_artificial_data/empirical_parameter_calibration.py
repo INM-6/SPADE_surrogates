@@ -224,10 +224,6 @@ def recalculate_memory_threshold(session, epoch, trialtype, process, spike_train
         return calculate_dynamic_abs_min_occ(session, epoch, trialtype, process)
 
 
-# =============================================================================
-# MAIN CALIBRATION
-# =============================================================================
-
 def calibrate_session_context_process(session, context, process):
     """Main calibration function for artificial data."""
     print(f"🎯 EMPIRICAL CALIBRATION - ARTIFICIAL DATA")
@@ -259,15 +255,26 @@ def calibrate_session_context_process(session, context, process):
     memory_threshold = recalculate_memory_threshold(session, epoch, trialtype, process, spike_trains, config)
     print(f"Memory protection: ≥{memory_threshold}")
     
-    # Calibrate each job
+    # Calibrate each pattern size
     calibrated_params = {}
     
-    for job_id in sorted(jobs.keys()):
-        job_params = jobs[job_id]
-        pattern_size = job_params.get('min_spikes', 2)
+    for pattern_size in sorted(set(job_params.get('min_spikes', 2) for job_params in jobs.values())):
+        # Find the job with this pattern size
+        job_id = None
+        job_params = None
+        for jid, jparams in jobs.items():
+            if jparams.get('min_spikes', 2) == pattern_size:
+                job_id = jid
+                job_params = jparams
+                break
+        
+        if job_params is None:
+            print(f"Warning: No job found for pattern size {pattern_size}")
+            continue
+            
         original_min_occ = job_params['min_occ']
         
-        print(f"\n🎯 JOB {job_id} (Pattern Size {pattern_size})")
+        print(f"\n🎯 PATTERN SIZE {pattern_size} (Job ID: {job_id})")
         print(f"Original min_occ: {original_min_occ}")
         
         # Extract SPADE parameters
@@ -285,7 +292,7 @@ def calibrate_session_context_process(session, context, process):
             target_patterns, memory_threshold, step_size
         )
         
-        # Store results
+        # Store results using pattern_size as key
         calibrated_job_params = job_params.copy()
         calibrated_job_params.update({
             'min_occ': optimal_min_occ,
@@ -294,7 +301,7 @@ def calibrate_session_context_process(session, context, process):
             'target_patterns': target_patterns,
             'dynamic_abs_min_occ': memory_threshold
         })
-        calibrated_params[job_id] = calibrated_job_params
+        calibrated_params[pattern_size] = calibrated_job_params
         
         # Summary
         change = optimal_min_occ - original_min_occ
@@ -314,17 +321,11 @@ def main():
     print(f"🚀 Starting calibration: {args.session} {args.context} {args.process}")
     
     try:
-        # Load configuration to get surrogate method
-        config = load_configuration()
-        surr_method = config.get('surr_method', 'trial_shifting')
-        
-        print(f"Surrogate method from config: {surr_method}")
-        
         # Run calibration
         calibrated_params = calibrate_session_context_process(args.session, args.context, args.process)
         
-        # Save results with correct path structure including surrogate method and process
-        output_dir = f'../../results/empirical_calibration/{surr_method}/{args.process}/{args.session}'
+        # Save results (no surrogate method in path structure)
+        output_dir = f'../../results/empirical_calibration/{args.process}/{args.session}'
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f'{args.context}_calibrated_params.npy')
         
@@ -349,7 +350,7 @@ def main():
         avg_change_pct = ((np.mean(calibrated_values) - np.mean(original_values)) / np.mean(original_values)) * 100
         
         print(f"\n🎉 CALIBRATION COMPLETE")
-        print(f"Jobs: {len(calibrated_params)} ({n_reduced} reduced, {n_increased} increased, {n_unchanged} unchanged)")
+        print(f"Pattern sizes: {len(calibrated_params)} ({n_reduced} reduced, {n_increased} increased, {n_unchanged} unchanged)")
         print(f"Average change: {avg_change_pct:+.1f}%")
         print(f"Final output: {output_file}")
         

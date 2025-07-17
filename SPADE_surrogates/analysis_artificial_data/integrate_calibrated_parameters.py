@@ -14,7 +14,7 @@ def integrate_calibrated_parameters():
     Integrate all calibrated parameters from individual session/context/process files
     into the main parameter dictionary for artificial data.
     """
-    print("=== Integrating Calibrated Parameters for Artificial Data ===")
+    print("=== Integrating Calibrated Parameters - Artificial Data ===")
     
     # Load configuration to get all sessions/contexts/processes
     with open("../configfile.yaml", 'r') as stream:
@@ -24,7 +24,6 @@ def integrate_calibrated_parameters():
     epochs = config['epochs']
     trialtypes = config['trialtypes']
     processes = config['processes']
-    surr_method = config['surr_method']
     
     # Load original parameter dictionary
     original_param_dict = np.load('param_dict.npy', allow_pickle=True).item()
@@ -43,7 +42,7 @@ def integrate_calibrated_parameters():
     }
     
     print(f"Looking for calibrated parameters...")
-    print(f"Expected pattern: ../../results/empirical_calibration/{surr_method}/[process]/[session]/[context]_calibrated_params.npy")
+    print(f"Expected pattern: ../../results/empirical_calibration/[process]/[session]/[context]_calibrated_params.npy")
     print()
     
     # Process each session, process, and context
@@ -72,8 +71,8 @@ def integrate_calibrated_parameters():
                 original_job_count = len(calibrated_param_dict[session][process][context])
                 calibration_stats['total_jobs'] += original_job_count
                 
-                # Look for calibrated parameters file
-                calibration_file = f'../../results/empirical_calibration/{surr_method}/{process}/{session}/{context}_calibrated_params.npy'
+                # Look for calibrated parameters file (no surrogate method in path)
+                calibration_file = f'../../results/empirical_calibration/{process}/{session}/{context}_calibrated_params.npy'
                 
                 if os.path.exists(calibration_file):
                     try:
@@ -89,13 +88,12 @@ def integrate_calibrated_parameters():
                         print(f"    {context}: ✅ Integrated {len(calibrated_jobs)} calibrated jobs")
                         
                         # Show changes
-                        for job_id, job_params in calibrated_jobs.items():
+                        for pattern_size, job_params in calibrated_jobs.items():
                             if job_params.get('calibration_applied', False):
                                 original = job_params['original_min_occ']
                                 calibrated = job_params['min_occ']
-                                pattern_size = job_params['min_spikes']
                                 change_pct = ((calibrated - original) / original) * 100
-                                print(f"      Job {job_id} (size {pattern_size}): {original} → {calibrated} ({change_pct:+.1f}%)")
+                                print(f"      Pattern size {pattern_size}: {original} → {calibrated} ({change_pct:+.1f}%)")
                         
                     except Exception as e:
                         print(f"    {context}: ❌ Failed to load calibration: {e}")

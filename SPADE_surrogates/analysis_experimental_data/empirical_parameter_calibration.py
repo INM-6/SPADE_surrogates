@@ -260,7 +260,7 @@ def calibrate_session_context(session, context):
             target_patterns, memory_threshold, step_size
         )
         
-        # Store results
+        # Store results using pattern_size as key
         calibrated_job_params = pattern_job_params.copy()
         calibrated_job_params.update({
             'min_occ': optimal_min_occ,

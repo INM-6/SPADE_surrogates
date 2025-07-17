@@ -115,30 +115,15 @@ print(f"  Epoch duration: {epoch_duration}s")
 print(f"  Empirical calibration: {ENABLE_EMPIRICAL_CALIBRATION}")
 
 # =============================================================================
-# PARAMETER ESTIMATION
-# =============================================================================
-
-print("Parameter estimation will be done as a rule, not during workflow setup")
-
-# =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
 
 def get_pattern_results_for_context(wildcards):
     """Get all pattern result files for a specific context."""
-    param_dict = np.load('param_dict.npy', allow_pickle=True).item()
     return [
         f'../../results/artificial_data/{wildcards.surrogate_method}/{wildcards.process}'
         f'/{wildcards.session}/{wildcards.context}/{pattern_size}/results.npy'
-        for pattern_size in param_dict[wildcards.session][wildcards.process][wildcards.context]
-    ]
-
-def get_calibration_files_for_session(wildcards):
-    """Get all calibration files for a specific session and process."""
-    return [
-        f'../../results/empirical_calibration/{wildcards.surrogate_method}'
-        f'/{wildcards.process}/{wildcards.session}/{context}_calibrated_params.npy'
-        for context in contexts
+        for pattern_size in pattern_sizes
     ]
 
 def get_all_analysis_results():
@@ -176,15 +161,13 @@ def get_all_calibration_results():
         return []
     
     all_calibration = []
-    for surrogate_method in surrogates:
-        current_sessions = get_sessions_for_surrogate(surrogate_method)
-        for process in processes:
-            for session in current_sessions:
-                for context in contexts:
-                    all_calibration.append(
-                        f'../../results/empirical_calibration/{surrogate_method}/{process}/{session}'
-                        f'/{context}_calibrated_params.npy'
-                    )
+    for process in processes:
+        for session in sessions:  # Use all sessions for calibration
+            for context in contexts:
+                all_calibration.append(
+                    f'../../results/empirical_calibration/{process}/{session}'
+                    f'/{context}_calibrated_params.npy'
+                )
     return all_calibration
 
 # =============================================================================
@@ -241,14 +224,14 @@ print('Parameter dictionary and excluded neurons saved successfully!')
         echo "Parameter dictionary creation completed"
         """
 
-# Rule for empirical parameter calibration
+# Rule for empirical parameter calibration (no surrogate_method wildcard)
 rule empirical_calibration:
     input:
         parameter_file='param_dict.npy',
         excluded_neurons='excluded_neurons.npy',
         script='empirical_parameter_calibration.py'
     output:
-        '../../results/empirical_calibration/{surrogate_method}/{process}/{session}/{context}_calibrated_params.npy'
+        '../../results/empirical_calibration/{process}/{session}/{context}_calibrated_params.npy'
     resources:
         ntasks=1,              # Single task only
         cpus_per_task=1,       # Single CPU only  
@@ -256,9 +239,9 @@ rule empirical_calibration:
         mem="16G",             # Increased memory for single process
         partition=default_cluster["partition"]
     log:
-        "logs/empirical_calibration/{surrogate_method}_{process}_{session}_{context}.log"
+        "logs/empirical_calibration/{process}_{session}_{context}.log"
     message:
-        "Empirical calibration (artificial data): {wildcards.session} {wildcards.context} {wildcards.process} [{wildcards.surrogate_method}]"
+        "Empirical calibration (artificial data): {wildcards.session} {wildcards.context} {wildcards.process}"
     shell:
         """
         # Redirect all output to log file
@@ -272,10 +255,9 @@ rule empirical_calibration:
         echo "Session: {wildcards.session}"
         echo "Context: {wildcards.context}"
         echo "Process: {wildcards.process}"
-        echo "Surrogate method: {wildcards.surrogate_method}"
         echo "Working directory: $(pwd)"
         echo "Date: $(date)"
-        echo "Expected output: {output}"
+        echo "Expected output path: {output}"
         echo "Note: Running on artificial data without surrogates"
         
         # Check input files
@@ -300,21 +282,6 @@ rule empirical_calibration:
         echo "Python executable: $(which python)"
         echo "Python version: $(python --version)"
         
-        # Verify the surrogate method matches what the script will use
-        echo "=== Verifying surrogate method ==="
-        python -c "
-from SPADE_surrogates.analyse_data_utils.spade_analysis_utils import load_configuration
-config = load_configuration()
-surr_method = config.get('surr_method', 'trial_shifting')
-print(f'Config surrogate method: {{surr_method}}')
-print(f'Snakemake wildcard: {wildcards.surrogate_method}')
-if surr_method != '{wildcards.surrogate_method}':
-    print('ERROR: Surrogate method mismatch!')
-    exit(1)
-else:
-    print('✅ Surrogate methods match')
-"
-        
         # Run the calibration script
         echo "=== Running calibration script ==="
         python {input.script} "{wildcards.session}" "{wildcards.context}" "{wildcards.process}"
@@ -331,20 +298,21 @@ else:
             fi
         else
             echo "❌ ERROR: Output file not created: {output}"
-            echo "Contents of output directory:"
-            ls -la $(dirname {output}) || echo "Output directory does not exist"
-            echo "Contents of parent directory:"
-            ls -la $(dirname $(dirname {output})) || echo "Parent directory does not exist"
+            echo "Script actually saved to a different location. Let's check:"
+            echo "Looking for files in ../../results/empirical_calibration/{wildcards.process}/{wildcards.session}/"
+            ls -la ../../results/empirical_calibration/{wildcards.process}/{wildcards.session}/ || echo "Session directory does not exist"
+            echo "Contents of calibration directory:"
+            ls -la ../../results/empirical_calibration/ || echo "Calibration directory does not exist"
             exit 1
         fi
         
         echo "=== Empirical calibration completed successfully ==="
         """
 
-# Rule to integrate all calibrated parameters
+# Rule to integrate all calibrated parameters (no surrogate_method wildcard)
 rule integrate_calibrated_parameters:
     input:
-        calibration_files=lambda wildcards: get_all_calibration_results(),
+        calibration_files=get_all_calibration_results(),
         script='integrate_calibrated_parameters.py'
     output:
         'param_dict_calibrated_integrated.npy'
@@ -369,7 +337,7 @@ rule integrate_calibrated_parameters:
         echo "Parameter integration completed"
         """
 
-# Rule to run the SPADE analysis (depends on calibration if enabled)
+# Rule to run the SPADE analysis (WITH surrogate_method wildcard)
 rule analyze_data:
     input:
         parameter_file='param_dict.npy',
@@ -415,7 +383,7 @@ rule analyze_data:
         echo "SPADE analysis completed for pattern size {wildcards.pattern_size}"
         """
 
-# Rule to apply PSF and PSR filtering
+# Rule to apply PSF and PSR filtering (WITH surrogate_method wildcard)
 rule filter_results:
     input:
         results=get_pattern_results_for_context,

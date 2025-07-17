@@ -80,13 +80,12 @@ def integrate_calibrated_parameters():
                     print(f"  {context}: ✅ Integrated {len(calibrated_jobs)} calibrated jobs")
                     
                     # Show changes
-                    for job_id, job_params in calibrated_jobs.items():
+                    for pattern_size, job_params in calibrated_jobs.items():
                         if job_params.get('calibration_applied', False):
                             original = job_params['original_min_occ']
                             calibrated = job_params['min_occ']
-                            pattern_size = job_params['min_spikes']
                             change_pct = ((calibrated - original) / original) * 100
-                            print(f"    Job {job_id} (size {pattern_size}): {original} → {calibrated} ({change_pct:+.1f}%)")
+                            print(f"    Pattern size {pattern_size}: {original} → {calibrated} ({change_pct:+.1f}%)")
                     
                 except Exception as e:
                     print(f"  {context}: ❌ Failed to load calibration: {e}")
