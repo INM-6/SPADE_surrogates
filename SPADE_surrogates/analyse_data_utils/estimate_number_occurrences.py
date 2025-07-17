@@ -638,23 +638,7 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
             analysis_params=analysis_params,
             process=process
         )
-        
-        print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, dynamic_abs_min_occ)}")'],
-            'dither': config_params['dither'],
-            'spectrum': config_params['spectrum'],
-            'abs_min_spikes': config_params['abs_min_spikes']
-        }
-        
-        # Store parameters using pattern_size as key
-        _store_analysis_parameters(
-            param_dict=param_dict,
-            session=session,
-            context=context,
-            pattern_size=pattern_size,
-            analysis_params=analysis_params,
-            process=process
-        )
-        
+
         print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, dynamic_abs_min_occ)}")
 
 
@@ -829,6 +813,7 @@ def execute_occurrence_estimation(analyze_original=True):
     
     # Note: abs_min_occ is no longer used from config - it's calculated dynamically
     print("Note: abs_min_occ from config file is ignored - using dynamic calculation instead")
+    print("Note: Trial count depends on both session and trialtype (but not epoch)")
     
     # Determine processes to analyze
     if analyze_original:
