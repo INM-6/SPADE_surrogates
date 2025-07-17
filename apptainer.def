@@ -1,0 +1,79 @@
+Bootstrap: docker
+From: debian:12
+
+%files
+    SPADE_surrogates /src/SPADE_surrogates
+    data/concatenated_spiketrains /data/concatenated_spiketrains
+    /work/datasets/r2g_nix/l101014s008.nix /data/l101014s008.nix
+
+%post
+    # Set non-interactive mode to avoid prompts
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Update package lists and install dependencies in one layer
+    apt-get update && apt-get install -y \
+        python3 \
+        python3-pip \
+        python3-venv \
+        python3-full \
+        ca-certificates \
+        git \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Update certificates
+    update-ca-certificates
+    
+    # Create virtual environment (only once)
+    python3 -m venv /venv
+    
+    # Upgrade pip in virtual environment
+    /venv/bin/pip install --upgrade pip setuptools wheel
+    
+    # Install your package
+    cd /src/SPADE_surrogates
+    /venv/bin/pip install .[analysis]
+    
+    # Set proper permissions
+    chmod -R 755 /src
+    chmod -R 755 /data
+
+%environment
+    export PATH="/venv/bin:$PATH"
+    export PYTHONPATH="/src:$PYTHONPATH"
+
+%runscript
+    #!/bin/bash
+    set -e  # Exit on any error
+    
+    echo "Starting SPADE surrogate analysis..."
+    
+    # Generate original concatenated data (if needed)
+    # python /src/SPADE_surrogates/generate_original_concatenated_data.py
+    
+    echo "Generating artificial data..."
+    python /src/SPADE_surrogates/generate_artificial_data_submit.py
+    
+    echo "Running experimental data analysis..."
+    bash /src/SPADE_surrogates/analysis_experimental_data/snakejob.sh
+    
+    echo "Running artificial data analysis..."
+    bash /src/SPADE_surrogates/analysis_artificial_data/snakejob.sh
+    
+    echo "Analysis complete!"
+
+%labels
+    Author Your Name
+    Version 1.0
+    Description SPADE surrogate analysis pipeline
+
+%help
+    This container runs the SPADE surrogate analysis pipeline.
+    
+    Usage:
+        apptainer run container.sif
+    
+    The container will:
+    1. Generate artificial data
+    2. Run experimental data analysis
+    3. Run artificial data analysis
