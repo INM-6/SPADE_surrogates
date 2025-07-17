@@ -25,7 +25,7 @@ configfile: "../configfile.yaml"
 # =============================================================================
 
 # Load cluster configuration from JSON file
-with open("../cluster.json", "r") as f:
+with open("cluster_artificial.json", "r") as f:
     cluster_config = json.load(f)
 
 # Set default resources from cluster.json
@@ -95,13 +95,10 @@ contexts = [epoch + '_' + tt for epoch in config['epochs'] for tt in config['tri
 # Enable empirical calibration by default
 ENABLE_EMPIRICAL_CALIBRATION = config.get('enable_empirical_calibration', True)
 
-# Function to get sessions based on surrogate method
+# Function to get sessions for artificial data (always use reduced sessions)
 def get_sessions_for_surrogate(surrogate_method):
-    """Get sessions based on surrogate method"""
-    if surrogate_method == 'trial_shifting':
-        return sessions  # All sessions for trial_shifting
-    else:
-        return reduced_sessions  # Limited sessions for other methods
+    """Get sessions based on surrogate method for artificial data"""
+    return reduced_sessions  # Always use reduced sessions for artificial data
 
 print(f"Analyzing artificial data:")
 print(f"  Sessions: {len(sessions)} ({sessions})")
@@ -162,7 +159,7 @@ def get_all_calibration_results():
     
     all_calibration = []
     for process in processes:
-        for session in sessions:  # Use all sessions for calibration
+        for session in reduced_sessions:  # Use reduced sessions for artificial data
             for context in contexts:
                 all_calibration.append(
                     f'../../results/empirical_calibration/{process}/{session}'

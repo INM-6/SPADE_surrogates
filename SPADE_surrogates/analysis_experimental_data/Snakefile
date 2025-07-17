@@ -25,7 +25,7 @@ configfile: "../configfile.yaml"
 # =============================================================================
 
 # Load cluster configuration from JSON file
-with open("../cluster.json", "r") as f:
+with open("cluster_experimental.json", "r") as f:
     cluster_config = json.load(f)
 
 # Set default resources from cluster.json

@@ -1,0 +1,62 @@
+{
+  "__default__": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "02:00:00",
+    "mem": "4G",
+    "partition": "hamstein",
+    "jobname": "spade_{rule}"
+  },
+  "create_parameter_dict": {
+    "ntasks": 1,
+    "cpus_per_task": 4,
+    "time": "00:30:00",
+    "mem": "16G",
+    "partition": "hamstein",
+    "jobname": "spade_params"
+  },
+  "analyze_data": {
+    "ntasks": 24,
+    "cpus_per_task": 1,
+    "time": "08:00:00",
+    "mem": "48G",
+    "partition": "hamstein",
+    "jobname": "spade_analysis_{wildcards.job_id}",
+    "comment": "Uses hamstein (48 cores) - fits 2 jobs per node with 24 cores each"
+  },
+  "analyze_data_large": {
+    "ntasks": 24,
+    "cpus_per_task": 1,
+    "time": "12:00:00",
+    "mem": "96G",
+    "partition": "hamstein",
+    "jobname": "spade_analysis_large_{wildcards.job_id}",
+    "comment": "For large datasets requiring more memory"
+  },
+  "analyze_data_fast": {
+    "ntasks": 24,
+    "cpus_per_task": 1,
+    "time": "04:00:00",
+    "mem": "32G",
+    "partition": "hamsteinZen3",
+    "jobname": "spade_analysis_fast_{wildcards.job_id}",
+    "comment": "Uses faster Zen3 cores for quick turnaround"
+  },
+  "filter_results": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "00:30:00",
+    "mem": "8G",
+    "partition": "hamstein",
+    "jobname": "spade_filter_{wildcards.session}_{wildcards.context}"
+  },
+  "filter_results_large": {
+    "ntasks": 1,
+    "cpus_per_task": 1,
+    "time": "01:00:00",
+    "mem": "16G",
+    "partition": "hamstein",
+    "jobname": "spade_filter_large_{wildcards.session}_{wildcards.context}",
+    "comment": "For contexts with many pattern sizes or large result files"
+  }
+}
