@@ -3,6 +3,9 @@ slurm_logs/
 logs/
 slurm/
 
+# figures
+figures/
+
 #snakemake
 .snakemake/
 
