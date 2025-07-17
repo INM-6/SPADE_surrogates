@@ -1,284 +1,252 @@
 """
-Script to create the figure of the manuscript which shows the spike count
-reduction found in experimental data.
+Script to create the figure showing spike count reduction in experimental data.
+
+This script generates a multi-panel figure that visualizes:
+- Spike count reduction from binning and uniform dithering (UD) surrogates
+- Inter-spike interval (ISI) distributions for original and surrogate data
+- CV2 and dead time distributions across neurons
 """
+
 import itertools
-
 import numpy as np
-
 import quantities as pq
-from elephant import conversion
-from elephant import spike_train_surrogates
-import elephant.statistics as stat
-
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-from generate_artificial_data import estimate_rate_deadtime, create_st_list
+from elephant import conversion, spike_train_surrogates
+import elephant.statistics as stat
 
+from generate_artificial_data import estimate_rate_deadtime, create_st_list
 from rgutils import load_processed_spike_trains
 
+# Constants
+XLABEL_PADDING = -0.25
+DEFAULT_FONTSIZE = 9
+FIGURE_SIZE = (5.2, 5.5)
+FIGURE_DPI = 300
 
-XLABELPAD = -0.25
 
-
-def _total_count(binned_st):
+def count_spikes_in_bins(binned_spike_train):
     """
-    Function calculates number of spikes if the spike train.
-
+    Count the number of bins containing spikes in a binned spike train.
+    
     Parameters
     ----------
-    binned_st: elephant.conversion.BinnedSpikeTrain
-        Binned spike train of input
-
+    binned_spike_train : elephant.conversion.BinnedSpikeTrain
+        The binned spike train to analyze
+        
     Returns
     -------
-        number of spikes of the binned spike train
-    -------
-
+    int
+        Number of bins containing at least one spike
     """
-    binned_st = binned_st.to_array()[0, :]
-    binned_st = np.array(binned_st > 0, dtype=int)
-    return sum(binned_st)
+    spike_array = binned_spike_train.to_array()[0, :]
+    binary_array = np.array(spike_array > 0, dtype=int)
+    return np.sum(binary_array)
 
 
-def _mean_std_spike_counts_after_binning(sts, mean_list, std_list):
+def calculate_spike_count_statistics(spike_trains, bin_size, mean_list, std_list):
     """
-    Function calculating a list of mean and standard deviations of the
-    spike counts of the input spike trains.
-
+    Calculate mean and standard deviation of spike counts after binning.
+    
     Parameters
     ----------
-    sts: list
-        list of spiketrains in input
-    mean_list: list
-        list of mean spike counts
-    std_list: list
-        list of std of spike counts
-
-    Returns
-    -------
-    mean_list, std_list calculated inplace
-
+    spike_trains : list
+        List of spike trains to analyze
+    bin_size : pq.Quantity
+        Size of bins for spike train discretization
+    mean_list : list
+        List to append mean spike counts (modified in place)
+    std_list : list
+        List to append standard deviations (modified in place)
     """
     spike_counts = []
-    for st in sts:
-        binned_st = conversion.BinnedSpikeTrain(st, bin_size=binsize)
-        spike_counts.append(_total_count(binned_st))
+    for spike_train in spike_trains:
+        binned_train = conversion.BinnedSpikeTrain(spike_train, bin_size=bin_size)
+        spike_counts.append(count_spikes_in_bins(binned_train))
+    
     mean_list.append(np.mean(spike_counts))
     std_list.append(np.std(spike_counts))
 
 
-def _mean_std_residuals(binned_single_spike_count,
-                        surrogates,
-                        mean_residuals,
-                        std_residuals):
+def calculate_residual_statistics(original_spike_count, surrogate_trains, bin_size,
+                                mean_residuals, std_residuals):
     """
-    Function calculating a list of mean and standard deviations of the
-    residuals between the one original spike train and its uniformly dithered
-    surrogates.
-
+    Calculate statistics for residuals between original and surrogate spike counts.
+    
     Parameters
     ----------
-    binned_single_spike_count: int
-        spike count of the considered neuron
-    surrogates: list
-        list of uniformly dithered surrogates of the original neuron
-    mean_residuals: list
-        list of mean residuals of spike counts between neurons and their UD
-        surrogates
-    std_residuals: list
-        list of std residuals of spike counts between neurons and their UD
-        surrogates
-
-    Returns
-    -------
-    mean_residuals, std_residuals calculated inplace
-
+    original_spike_count : int
+        Spike count from the original neuron
+    surrogate_trains : list
+        List of uniformly dithered surrogate spike trains
+    bin_size : pq.Quantity
+        Size of bins for spike train discretization
+    mean_residuals : list
+        List to append mean residuals (modified in place)
+    std_residuals : list
+        List to append standard deviations of residuals (modified in place)
     """
-    spike_counts = []
-    residuals_surrogates = []
-    for st in surrogates:
-        binned_st = conversion.BinnedSpikeTrain(st, binsize=binsize)
-        spike_counts.append(_total_count(binned_st))
-        residuals_surrogates.append(
-            binned_single_spike_count - _total_count(binned_st))
-    mean_residuals.append(np.mean(np.array(residuals_surrogates)))
-    std_residuals.append(np.std(np.array(residuals_surrogates)))
+    residuals = []
+    for surrogate_train in surrogate_trains:
+        binned_surrogate = conversion.BinnedSpikeTrain(surrogate_train, bin_size=bin_size)
+        surrogate_count = count_spikes_in_bins(binned_surrogate)
+        residuals.append(original_spike_count - surrogate_count)
+    
+    mean_residuals.append(np.mean(residuals))
+    std_residuals.append(np.std(residuals))
 
 
-def calculate_residuals(sts, dither, binsize,
-                        n_surr, epoch_length,
-                        winlen):
+def analyze_spike_count_reduction(spike_trains, dither_amount, bin_size, n_surrogates,
+                                trial_length, window_length):
     """
-    Function calculating the residuals, their means and standard deviations
-    between all spike counts of all neurons and the uniform dithering
-    surrogates generated.
-
+    Analyze spike count reduction from binning and uniform dithering.
+    
     Parameters
     ----------
-    sts: list of neo.SpikeTrains
-        spiketrains of the data set
-    dither: pq.quantities
-        dithering parameter of the surrogate generation
-    binsize: pq.quantities
-        binsize of the analysis
-    n_surr: int
-        number of surrogates generated
-    epoch_length: pq.quantities
-        length of each trial
-    winlen: int
-        window length of the spade analysis
-
+    spike_trains : list
+        List of spike trains to analyze
+    dither_amount : pq.Quantity
+        Amount of dithering for surrogate generation
+    bin_size : pq.Quantity
+        Size of bins for discretization
+    n_surrogates : int
+        Number of surrogate trains to generate
+    trial_length : pq.Quantity
+        Length of each trial
+    window_length : int
+        Window length for analysis
+        
     Returns
     -------
-    firing_rates: list
-        list of average firing rates of all neurons
-    mean_residuals: list
-        list of mean residuals of spike counts between neurons and their UD
-        surrogates
-    std_residuals: list
-        list of std residuals of spike counts between neurons and their UD
-        surrogates
-
+    tuple
+        (firing_rates, mean_residuals, std_residuals)
     """
-
-    # define separation interval between successive trials
-    sep = 2 * binsize * winlen
-
+    # Calculate separation between trials
+    trial_separation = 2 * bin_size * window_length
+    
     original_spike_counts = []
     binned_spike_counts = []
     mean_residuals = []
     std_residuals = []
-
-    # calculate number of trials
-    number_of_trials = int(sts[0].t_stop / (epoch_length + sep))
-
-    # loop over spike trains
-    for st in sts:
-        # bin original spike train
-        binned_st = conversion.BinnedSpikeTrain(st, bin_size=binsize)
-        original_spike_counts.append(len(st))
-        # calculate number of spikes in binned spike train
-        binned_single_spike_count = _total_count(binned_st)
-        binned_spike_counts.append(binned_single_spike_count)
-        # dithering spikes
-        surrogate_sts = spike_train_surrogates.dither_spikes(
-            st, dither, n_surrogates=n_surr, edges=True)
-        # calculating mean and std and residuals of original to binned data
-        _mean_std_residuals(
-            binned_single_spike_count,
-            surrogate_sts,
-            mean_residuals,
-            std_residuals)
-
-    firing_rates = original_spike_counts / (number_of_trials * epoch_length)
-
+    
+    # Calculate number of trials
+    n_trials = int(spike_trains[0].t_stop / (trial_length + trial_separation))
+    
+    for spike_train in spike_trains:
+        # Process original spike train
+        binned_train = conversion.BinnedSpikeTrain(spike_train, bin_size=bin_size)
+        original_count = len(spike_train)
+        binned_count = count_spikes_in_bins(binned_train)
+        
+        original_spike_counts.append(original_count)
+        binned_spike_counts.append(binned_count)
+        
+        # Generate and analyze surrogates
+        surrogate_trains = spike_train_surrogates.dither_spikes(
+            spike_train, dither_amount, n_surrogates=n_surrogates, edges=True)
+        
+        calculate_residual_statistics(
+            binned_count, surrogate_trains, bin_size, mean_residuals, std_residuals)
+    
+    # Calculate firing rates
+    firing_rates = np.array(original_spike_counts) / (n_trials * trial_length)
+    
     return firing_rates, mean_residuals, std_residuals
 
 
-def plot_loss_top_panel(
-        ax_loss,
-        ax_residuals,
-        sts, dither, binsize,
-        n_surr, epoch_length,
-        winlen, fontsize):
+def plot_spike_count_reduction(ax_loss, ax_residuals, spike_trains, dither_amount,
+                             bin_size, n_surrogates, trial_length, window_length,
+                             fontsize):
     """
-    Function producing the top panel of figure 2, representing the spike
-    count reduction resulting by clipping and UD surrogate generation.
-    with crosses of different colors, we represent the reduction in the spike
-    count in function of the average firing rate.
-    Each cross represent one neuron. In blue, we indicate the spike count
-    reduction caused by clipping the original spike train.
-    In orange, we indicate the spike count reduction followed by generating
-    surrogates by UD and then clipping. The spike count reduction is
-    expressed in percentage with respect to the original continuous-time
-    spike train. Bars indicate the standard deviation of the spike count
-    reduction calculated across n_surr surrogates.
-
+    Plot spike count reduction from binning and uniform dithering.
+    
+    Creates two panels:
+    1. Top panel: Spike count reduction vs firing rate
+    2. Bottom panel: Residuals between original and surrogate reductions
+    
     Parameters
     ----------
-    ax_loss: plt.axes
-        ax of the spike count reduction panel
-    ax_residuals: plt.axes
-        ax of the residuals panel
-    sts: list of neo.SpikeTrains
-        spiketrains of the data set
-    dither: pq.quantities
-        dithering parameter of the surrogate generation
-    binsize: pq.quantities
-        binsize of the analysis
-    n_surr: int
-        number of surrogates generated
-    epoch_length: pq.quantities
-        length of each trial
-    winlen: int
-        window length of the spade analysis
-    fontsize: int
-        fontsize for plotting
-
+    ax_loss : matplotlib.axes.Axes
+        Axes for the spike count reduction plot
+    ax_residuals : matplotlib.axes.Axes
+        Axes for the residuals plot
+    spike_trains : list
+        List of spike trains to analyze
+    dither_amount : pq.Quantity
+        Amount of dithering for surrogate generation
+    bin_size : pq.Quantity
+        Size of bins for discretization
+    n_surrogates : int
+        Number of surrogate trains to generate
+    trial_length : pq.Quantity
+        Length of each trial
+    window_length : int
+        Window length for analysis
+    fontsize : int
+        Font size for labels
     """
-    # define separation interval between trials
-    sep = 2 * binsize * winlen
-
+    # Calculate separation between trials
+    trial_separation = 2 * bin_size * window_length
+    
+    # Initialize data containers
     original_spike_counts = []
     binned_spike_counts = []
-    mean_spike_counts_dither = []
-    std_spike_counts_dither = []
-
-    number_of_trials = int(sts[0].t_stop / (epoch_length + sep))
-    for st in sts:
-        binned_st = conversion.BinnedSpikeTrain(st, binsize=binsize)
-        original_spike_counts.append(len(st))
-        binned_spike_counts.append(_total_count(binned_st))
-
-        surrogate_sts = spike_train_surrogates.dither_spikes(
-            st, dither, n=n_surr, edges=True)
-        _mean_std_spike_counts_after_binning(
-            surrogate_sts, mean_spike_counts_dither,
-            std_spike_counts_dither)
-
-    original_spike_counts = np.array(original_spike_counts)
-    binned_spike_counts = np.array(binned_spike_counts)
-
-    mean_spike_counts_dither = np.array(mean_spike_counts_dither)
-    std_spike_counts_dither = np.array(std_spike_counts_dither)
-
-    firing_rates = original_spike_counts / (number_of_trials * epoch_length)
-    binned_loss = 1. - binned_spike_counts / original_spike_counts
-    mean_loss_dither = 1. - mean_spike_counts_dither / original_spike_counts
-    std_loss_dither = std_spike_counts_dither / original_spike_counts
-
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728',
-              '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
-              '#bcbd22', '#17becf']
+    mean_dithered_counts = []
+    std_dithered_counts = []
+    
+    # Calculate number of trials
+    n_trials = int(spike_trains[0].t_stop / (trial_length + trial_separation))
+    
+    # Process each spike train
+    for spike_train in spike_trains:
+        # Original and binned counts
+        binned_train = conversion.BinnedSpikeTrain(spike_train, bin_size=bin_size)
+        original_spike_counts.append(len(spike_train))
+        binned_spike_counts.append(count_spikes_in_bins(binned_train))
+        
+        # Generate surrogates and calculate statistics
+        surrogate_trains = spike_train_surrogates.dither_spikes(
+            spike_train, dither_amount, n=n_surrogates, edges=True)
+        calculate_spike_count_statistics(
+            surrogate_trains, bin_size, mean_dithered_counts, std_dithered_counts)
+    
+    # Convert to numpy arrays for calculations
+    original_counts = np.array(original_spike_counts)
+    binned_counts = np.array(binned_spike_counts)
+    mean_dithered = np.array(mean_dithered_counts)
+    std_dithered = np.array(std_dithered_counts)
+    
+    # Calculate firing rates and losses
+    firing_rates = original_counts / (n_trials * trial_length)
+    binned_loss = 1.0 - binned_counts / original_counts
+    mean_dithered_loss = 1.0 - mean_dithered / original_counts
+    std_dithered_loss = std_dithered / original_counts
+    
+    # Plot spike count reduction
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    
     ax_loss.scatter(firing_rates, binned_loss, label='Original',
-                    color=colors[0], marker='x')
-
-    ax_loss.errorbar(firing_rates, mean_loss_dither, yerr=std_loss_dither,
-                     fmt='o', label='UD Surrogate', color=colors[1],
-                     marker='x')
-
+                   color=colors[0], marker='x')
+    ax_loss.errorbar(firing_rates, mean_dithered_loss, yerr=std_dithered_loss,
+                    fmt='o', label='UD Surrogate', color=colors[1], marker='x')
+    
     ax_loss.set_ylabel('Spike count\ndecrease', fontsize=fontsize)
-
-    ax_loss.set_xlim(left=2. / epoch_length.magnitude, right=65)
+    ax_loss.set_xlim(left=2.0 / trial_length.magnitude, right=65)
     ax_loss.set_ylim(bottom=-0.01, top=0.23)
     ax_loss.tick_params(axis="x", labelsize=8)
     ax_loss.tick_params(axis="y", labelsize=8)
-
     ax_loss.legend(fontsize=fontsize - 2, loc='upper right')
-
-    ax_residuals.errorbar(
-        firing_rates, -binned_loss + mean_loss_dither, yerr=std_loss_dither,
-        fmt='o', label='UD Surrogate + clipping', color='grey',
-        marker='x')
-
-    ax_residuals.set_xlabel(
-        'Average Firing rate (Hz)',
-        fontsize=fontsize,
-        labelpad=XLABELPAD)
-    ax_residuals.set_ylabel('Residuals',
-                            fontsize=fontsize)
+    
+    # Plot residuals
+    ax_residuals.errorbar(firing_rates, -binned_loss + mean_dithered_loss,
+                         yerr=std_dithered_loss, fmt='o',
+                         label='UD Surrogate + clipping', color='grey', marker='x')
+    
+    ax_residuals.set_xlabel('Average Firing rate (Hz)', fontsize=fontsize,
+                           labelpad=XLABEL_PADDING)
+    ax_residuals.set_ylabel('Residuals', fontsize=fontsize)
     ax_residuals.set_xlim(left=0, right=65)
     ax_residuals.set_ylim(bottom=-0.05, top=0.125)
     ax_residuals.tick_params(axis="x", labelsize=8)
@@ -286,509 +254,476 @@ def plot_loss_top_panel(
     ax_residuals.set_xticks(np.arange(0, 65, 20))
 
 
-def plot_residuals(ax, sts, dither, binsize, fontsize, epoch_length,
-                   winlen, n_surr):
+def plot_isi_distribution(spike_train, ax, dither_amount, n_surrogates=500,
+                         show_ylabel=True, show_xlabel=True, fontsize=14,
+                         show_legend=False):
     """
-    Function producing the lower panel of Figure 2. Residuals computed as
-    the difference between the original clipped spike trains and the UD
-    binned and clipped surrogates, i.e., between the blue and the orange
-    crosses.
-
+    Plot inter-spike interval (ISI) distributions for original and surrogate data.
+    
     Parameters
     ----------
-    ax: plt.axes
-        ax of the panel
-    sts: list of neo.SpikeTrains
-        spiketrains of the data set
-    dither: pq.quantities
-        dithering parameter of the surrogate generation
-    binsize: pq.quantities
-        binsize of the analysis
-    n_surr: int
-        number of surrogates generated
-    epoch_length: pq.quantities
-        length of each trial
-    winlen: int
-        window length of the spade analysis
-
+    spike_train : neo.SpikeTrain
+        The spike train to analyze
+    ax : matplotlib.axes.Axes
+        Axes for plotting
+    dither_amount : pq.Quantity
+        Amount of dithering for surrogate generation
+    n_surrogates : int, optional
+        Number of surrogates to generate (default: 500)
+    show_ylabel : bool, optional
+        Whether to show y-axis label (default: True)
+    show_xlabel : bool, optional
+        Whether to show x-axis label (default: True)
+    fontsize : int, optional
+        Font size for labels (default: 14)
+    show_legend : bool, optional
+        Whether to show legend (default: False)
     """
-
-    firing_rates, mean_residuals, std_residuals = \
-        calculate_residuals(sts,
-                            dither=dither * pq.s,
-                            binsize=binsize,
-                            n_surr=n_surr,
-                            epoch_length=epoch_length,
-                            winlen=winlen)
-    ax.errorbar(firing_rates, mean_residuals, yerr=std_residuals,
-                fmt='o', label='UD Surrogate + clipping', color='grey',
-                marker='x', alpha=0.8)
-    ax.set_xlabel(
-        'Average Firing rate (Hz)',
-        fontsize=fontsize,
-        labelpad=XLABELPAD)
-    ax.set_ylabel('Residuals', fontsize=fontsize)
-    ax.set_xlim(left=0, right=65)
-    ax.set_ylim(bottom=0, top=100)
-    ax.tick_params(axis="x", labelsize=8)
-    ax.tick_params(axis="y", labelsize=8)
-    ax.set_xticks(np.arange(0, 65, 20))
-
-
-def plot_isi_surr(st, ax, dither, num_surr=500, show_ylabel=True,
-                  show_xlabel=True, fontsize=14, legend=False):
-    """
-    Function calculating the ISI distributions of two example
-    neurons and the ISI distribution of UD surrogates generated from the
-    original neurons. Neurons represented are, with (channel-id,unit-id)
-    notation, (7,1) and (16,1) for monkey N, (5,1) and (6.1) for monkey L.
-    or each monkey, on the left we show the ISI distributions of two example
-    neurons (blue line) and the ISI distribution of UD surrogates generated
-    from the original neurons (gray line: average across 500 surrogates;
-    gray band represents the first standard deviation) on a 1ms resolution.
-
-    Parameters
-    ----------
-    st: neo.SpikeTrain
-    ax: plt.axes
-        ax where to plot
-    dither: pq.Quantity
-        dithering parameter of the surrogate generation
-    num_surr: int
-        number of surrogates to generate to show the ISI distribution
-    """
-    # calculate isi of original spike train
-    isi = stat.isi(st)
-    # generate surrogates
-    surr_list = spike_train_surrogates.dither_spikes(
-        st, n_surrogates=num_surr, dither=dither * pq.s)
-    # calculate isi of surrogates
-    isis = [stat.isi(dithered_st) for dithered_st in surr_list]
-    bin_distance = 0.001
-    bins = np.arange(0, 0.05, bin_distance)
+    # Calculate ISI for original spike train
+    original_isi = stat.isi(spike_train)
+    
+    # Generate surrogates and calculate their ISIs
+    surrogate_trains = spike_train_surrogates.dither_spikes(
+        spike_train, n_surrogates=n_surrogates, dither=dither_amount * pq.s)
+    surrogate_isis = [stat.isi(surrogate) for surrogate in surrogate_trains]
+    
+    # Set up histogram parameters
+    bin_width = 0.001
+    bins = np.arange(0, 0.05, bin_width)
+    bin_centers = bins[:-1] + bin_width / 2
+    
+    # Calculate histogram for original data
+    original_hist, _ = np.histogram(original_isi, bins=bins, density=True)
+    
+    # Calculate histograms for surrogates
+    surrogate_hists = [np.histogram(isi, bins=bins, density=True)[0] 
+                      for isi in surrogate_isis]
+    surrogate_mean = np.mean(surrogate_hists, axis=0)
+    surrogate_std = np.std(surrogate_hists, axis=0)
+    
+    # Plot original ISI distribution
+    ax.plot(bin_centers, original_hist, label='Original')
+    
+    # Plot surrogate ISI distribution with confidence band
+    ax.fill_between(bin_centers, surrogate_mean - surrogate_std,
+                   surrogate_mean + surrogate_std, color='lightgrey')
+    ax.plot(bin_centers, surrogate_mean, label='UD surrogates', color='grey')
+    
+    # Add bin size indicator
+    ax.axvline(x=bin_centers[5], color='navy', linestyle='--')
+    
+    # Configure axes
     ax.set_xlim(0, 0.05)
-    # generate histogram of original st
-    isi_distr, bin_edges = np.histogram(isi, bins=bins,
-                                        density=True)
-    # generate histogram of surrogates
-    hist_list = [
-        np.histogram(
-            isi_item,
-            bins=bins,
-            density=True)[0] for isi_item in isis]
-    # calculate mean and std of surrogates
-    hist_mean = np.mean(hist_list, axis=0)
-    hist_std = np.std(hist_list, axis=0)
-    # bin coordinates
-    bin_coordinates = bin_edges[:-1] + bin_distance / 2
-    # plot the ISI distribution of the original spike train
-    ax.plot(bin_coordinates, isi_distr, label='Original')
-    # plot the mean ISI distribution of the UD surrogates
-    ax.fill_between(bin_coordinates, hist_mean - hist_std,
-                    hist_mean + hist_std, color='lightgrey')
-    ax.plot(bin_coordinates, hist_mean, label='UD surrogates', color='grey')
-    if legend:
-        ax.legend(fontsize=fontsize - 2, loc='upper right')
-    # red bar for indication of binsize
-    ax.axvline(x=bin_coordinates[5], color='navy', linestyle='--')
+    ax.set_ylim(-1, 81)
     ax.tick_params(axis="x", labelsize=8)
     ax.tick_params(axis="y", labelsize=8)
+    
+    if show_legend:
+        ax.legend(fontsize=fontsize - 2, loc='upper right')
     if show_xlabel:
-        ax.set_xlabel(
-            'ISI (s)',
-            fontsize=fontsize,
-            labelpad=XLABELPAD)
+        ax.set_xlabel('ISI (s)', fontsize=fontsize, labelpad=XLABEL_PADDING)
     if show_ylabel:
         ax.set_ylabel('Count', fontsize=fontsize)
-    ax.set_ylim(-1, 81)
 
 
-def create_sts_list(sts, sep, epoch_length):
+def create_trial_based_spike_trains(spike_trains, trial_separation, trial_length):
     """
-    The function generates a list of spiketrains from the concatenated data,
-    where each spiketrain is a list of trials.
-
+    Convert concatenated spike trains into trial-based format.
+    
     Parameters
     ----------
-    sts : list of neo.SpikeTrain
-        spiketrains which are concatenated over trials for a
-        certain epoch.
-    sep: pq.Quantity
-        buffer in between concatenated trials
-    epoch_length: pq.Quantity
-        length of each trial
-
+    spike_trains : list
+        List of concatenated spike trains
+    trial_separation : pq.Quantity
+        Buffer time between trials
+    trial_length : pq.Quantity
+        Length of each trial
+        
     Returns
     -------
-    sts_list : list of neo.SpikeTrain
-        List of spiketrains, where each spiketrain corresponds to a list of
-        trials of a certain epoch.
+    list
+        List of spike trains organized by trials
     """
-    sts_list = []
+    trial_based_trains = []
+    
+    for spike_train in spike_trains:
+        single_trial_trains = create_st_list(
+            spiketrain=spike_train,
+            sep=trial_separation,
+            epoch_length=trial_length
+        )
+        trial_based_trains.append(single_trial_trains)
+    
+    return trial_based_trains
 
-    for st in sts:
-        single_concatenated_st = create_st_list(spiketrain=st,
-                                                sep=sep,
-                                                epoch_length=epoch_length)
-        sts_list.append(single_concatenated_st)
-    return sts_list
 
-
-def get_cv2(isis):
+def calculate_cv2(isis_list):
     """
-    Function calculating the CV2 given a list of ISIs extracted from one
-    spiketrain. Function from Van Vreiswijk 2010.
-
+    Calculate CV2 (coefficient of variation) from ISI list.
+    
+    Implementation based on Van Vreeswijk 2010.
+    
     Parameters
     ----------
-    isis: list
-        list of ISIs
+    isis_list : list
+        List of ISI arrays for different trials
+        
+    Returns
+    -------
+    float
+        CV2 value
     """
-    cv2 = np.sum(
-        [2 * np.sum(
-            np.abs(trial_isi[:-1] - trial_isi[1:])
-            / (trial_isi[:-1] + trial_isi[1:]))
-         for trial_isi in isis]
-        ) / np.sum([len(trial_isi) - 1 if len(trial_isi) > 0 else 0
-                    for trial_isi in isis])
-    return cv2
+    numerator = np.sum([
+        2 * np.sum(np.abs(isis[:-1] - isis[1:]) / (isis[:-1] + isis[1:]))
+        for isis in isis_list
+    ])
+    
+    denominator = np.sum([
+        len(isis) - 1 if len(isis) > 0 else 0
+        for isis in isis_list
+    ])
+    
+    return numerator / denominator if denominator > 0 else np.nan
 
 
-def plot_cv2(sts, ax, epoch_length, sep, show_xlabel=True,
-             show_ylabel=True, fontsize=14):
+def plot_cv2_distribution(spike_trains, ax, trial_length, trial_separation,
+                         show_xlabel=True, show_ylabel=True, fontsize=14):
     """
-    Function producing the distribution of CV2 of all neurons in the
-    considered dataset.
-
+    Plot distribution of CV2 values across neurons.
+    
     Parameters
     ----------
-    sts: list
-        list of spiketrains
-    ax: plt.axes
-        ax where to plot
-    epoch_length: pq.quantities
-        length of each trial
-    sep: pq.quantities
-        separation time between trials
+    spike_trains : list
+        List of spike trains
+    ax : matplotlib.axes.Axes
+        Axes for plotting
+    trial_length : pq.Quantity
+        Length of each trial
+    trial_separation : pq.Quantity
+        Separation time between trials
+    show_xlabel : bool, optional
+        Whether to show x-axis label (default: True)
+    show_ylabel : bool, optional
+        Whether to show y-axis label (default: True)
+    fontsize : int, optional
+        Font size for labels (default: 14)
     """
-    sts_list = create_sts_list(sts, epoch_length=epoch_length,
-                               sep=sep)
-    # loop over the neurons
-    cv2_list = []
-    for conc_st in sts_list:
-        isis = [np.diff(st.magnitude)
-                for st in conc_st
-                if len(st) > 1]
-        cv2 = get_cv2(isis)
-        cv2_list.append(cv2)
-
+    # Convert to trial-based format
+    trial_based_trains = create_trial_based_spike_trains(
+        spike_trains, trial_separation, trial_length)
+    
+    # Calculate CV2 for each neuron
+    cv2_values = []
+    for trial_trains in trial_based_trains:
+        isis_list = [np.diff(train.magnitude) for train in trial_trains if len(train) > 1]
+        cv2 = calculate_cv2(isis_list)
+        cv2_values.append(cv2)
+    
+    # Create histogram
     bin_width = 0.1
     bins = np.arange(0, 2, bin_width)
-    ax.hist(cv2_list, bins, alpha=1)
+    ax.hist(cv2_values, bins, alpha=1)
+    
+    # Configure axes
     ax.set_xticks(np.arange(0, 1.9, 0.5))
     ax.set_xlim(0.2, 1.5)
     ax.tick_params(axis="x", labelsize=8)
     ax.tick_params(axis="y", labelsize=8)
+    
     if show_xlabel:
-        ax.set_xlabel(
-            'CV2',
-            fontsize=fontsize,
-            labelpad=XLABELPAD)
+        ax.set_xlabel('CV2', fontsize=fontsize, labelpad=XLABEL_PADDING)
     if show_ylabel:
         ax.set_ylabel('Count', fontsize=fontsize)
 
 
-def plot_dt(sts, ax, sorting_dead_time, sep, max_refractory=4 * pq.ms,
-            show_xlabel=True, show_ylabel=True, fontsize=14.):
+def plot_dead_time_distribution(spike_trains, ax, sorting_dead_time, trial_separation,
+                               max_refractory=4 * pq.ms, show_xlabel=True,
+                               show_ylabel=True, fontsize=14):
     """
-    Function producing the distribution of dead times (calculated as minimal
-    ISI) of all neurons in the considered dataset.
-
+    Plot distribution of dead times (minimum ISI) across neurons.
+    
     Parameters
     ----------
-    sts: list
-        list of spiketrains
-    ax: plt.axes
-        ax where to plot
-    sorting_dead_time: dict
-        dictionary of dead times for all neurons fixed during spike sorting
-    sep: pq.Quantity
-        separation time between trials
-    max_refractory: pq.Quantity, optional
-        maximal refractory period as a top boundary
-        Default: 4*pq.ms
+    spike_trains : list
+        List of spike trains
+    ax : matplotlib.axes.Axes
+        Axes for plotting
+    sorting_dead_time : pq.Quantity
+        Dead time used during spike sorting
+    trial_separation : pq.Quantity
+        Separation time between trials
+    max_refractory : pq.Quantity, optional
+        Maximum refractory period (default: 4 ms)
     show_xlabel : bool, optional
-        Default: True
+        Whether to show x-axis label (default: True)
     show_ylabel : bool, optional
-        Default: True
-    fontsize : float, optional
-        Default: 14.
+        Whether to show y-axis label (default: True)
+    fontsize : int, optional
+        Font size for labels (default: 14)
     """
-    rp_list = []
-    # loop over the neurons
-    for st in sts:
-        rp = estimate_rate_deadtime(st,
-                                    max_refractory=max_refractory,
-                                    sampling_period=1 * pq.ms,
-                                    sep=sep)[1]
-        rp_list.append(rp * 1000)
-    rp_array = np.array(rp_list)[~np.isnan(np.array(rp_list))]
+    # Calculate dead times for each neuron
+    dead_times = []
+    for spike_train in spike_trains:
+        _, dead_time = estimate_rate_deadtime(
+            spike_train,
+            max_refractory=max_refractory,
+            sampling_period=1 * pq.ms,
+            sep=trial_separation
+        )
+        dead_times.append(dead_time * 1000)  # Convert to ms
+    
+    # Remove NaN values
+    dead_times = np.array(dead_times)
+    valid_dead_times = dead_times[~np.isnan(dead_times)]
+    
+    # Create histogram
     bin_width = 0.1
-    sorting_dead_time = sorting_dead_time.rescale(pq.ms).magnitude
     bins = np.arange(0, 4, bin_width)
+    ax.hist(valid_dead_times, bins, alpha=1)
+    
+    # Add sorting dead time reference line
+    sorting_dead_time_ms = sorting_dead_time.rescale(pq.ms).magnitude
+    ax.axvline(x=sorting_dead_time_ms, color='grey', linestyle='--')
+    
+    # Configure axes
     ax.set_xticks(np.arange(0, 4, 1))
-    ax.hist(rp_array, bins, alpha=1)
+    ax.set_xlim(-0.2, 3.5)
     ax.tick_params(axis="x", labelsize=8)
     ax.tick_params(axis="y", labelsize=8)
-    ax.axvline(x=sorting_dead_time, color='grey', linestyle='--')
+    
     if show_xlabel:
-        ax.set_xlabel(
-            r'd (ms)',
-            fontsize=fontsize,
-            labelpad=XLABELPAD)
+        ax.set_xlabel('d (ms)', fontsize=fontsize, labelpad=XLABEL_PADDING)
     if show_ylabel:
         ax.set_ylabel('Count', fontsize=fontsize)
-    ax.set_xlim(-0.2, 3.5)
 
 
-def fig_2(folder, sessions, epoch, trialtype, dither, binsize, n_surr,
-          winlen, epoch_length, sorting_deadtime, sep, fontsize,
-          data_type='original'):
-    # big gridspec
-    fig = plt.figure(figsize=(5.2, 5.5), dpi=300)
-    gsfig = gridspec.GridSpec(
+def create_spike_count_reduction_figure(data_folder, sessions, epoch, trial_type,
+                                       dither_amount, bin_size, n_surrogates,
+                                       window_length, trial_length, sorting_dead_times,
+                                       trial_separation, fontsize, data_type='original'):
+    """
+    Create the complete spike count reduction figure.
+    
+    Parameters
+    ----------
+    data_folder : str
+        Path to data folder
+    sessions : list
+        List of session names
+    epoch : str
+        Epoch name
+    trial_type : str
+        Trial type identifier
+    dither_amount : float
+        Amount of dithering for surrogates
+    bin_size : pq.Quantity
+        Size of bins for discretization
+    n_surrogates : int
+        Number of surrogates to generate
+    window_length : int
+        Window length for analysis
+    trial_length : pq.Quantity
+        Length of each trial
+    sorting_dead_times : dict
+        Dead times for each session
+    trial_separation : pq.Quantity
+        Separation between trials
+    fontsize : int
+        Font size for labels
+    data_type : str, optional
+        Type of data to analyze (default: 'original')
+    """
+    # Create figure and main grid
+    fig = plt.figure(figsize=FIGURE_SIZE, dpi=FIGURE_DPI)
+    main_grid = gridspec.GridSpec(
         nrows=3, ncols=1, figure=fig, hspace=0.4, wspace=0.2,
         left=0.12, right=0.97, bottom=0.075, top=0.95,
-        height_ratios=(1.25, 1., 0.75))
-
-    # ################### Panel A ####################
+        height_ratios=(1.25, 1., 0.75)
+    )
+    
+    # Set random seed for reproducibility
     np.random.seed(0)
-    # gridspec inside gridspec
-
-    wspace_between_columns = 0.15
-
-    gs_panel_a = gridspec.GridSpecFromSubplotSpec(
-        1, 2, subplot_spec=gsfig[0],
-        wspace=wspace_between_columns)
-
-    # Nikos
-    # loading
-    extra_part = f'{data_type}_' if data_type != 'original' else ''
-    file_nikos = f'{folder}{sessions[0]}/{extra_part}{epoch}_{trialtype}.npy'
-    sts_N = load_processed_spike_trains(
-        file_nikos)
-
-    # plotting
-    gs0 = gridspec.GridSpecFromSubplotSpec(
-        nrows=2, ncols=1,
-        subplot_spec=gs_panel_a[0], hspace=0,
-        height_ratios=[2, 1])
-    ax01 = fig.add_subplot(gs0[0])
-    ax02 = fig.add_subplot(gs0[1], sharex=ax01)
-    plot_loss_top_panel(ax_loss=ax01,
-                        ax_residuals=ax02,
-                        sts=sts_N,
-                        binsize=binsize,
-                        dither=dither * pq.s,
-                        n_surr=n_surr,
-                        epoch_length=epoch_length,
-                        winlen=winlen,
-                        fontsize=fontsize)
-    # hide ticklabels of first ISI figure
-    plt.setp(ax01.get_xticklabels(), visible=False)
-
-    ax01.set_title('Monkey N', fontsize=10)
-    plt.figtext(
-        x=0.055, y=0.95, s='A', fontsize=12, multialignment='center')
-    # Lilou
-    sts_L = load_processed_spike_trains(
-        f'{folder}{sessions[1]}/{extra_part}{epoch}_{trialtype}.npy')
-
-    gs1 = gridspec.GridSpecFromSubplotSpec(
-        nrows=2, ncols=1,
-        subplot_spec=gs_panel_a[1], hspace=0,
-        height_ratios=[2, 1])
-
-    ax11 = fig.add_subplot(gs1[0])
-    ax12 = fig.add_subplot(gs1[1], sharex=ax11)
-    plot_loss_top_panel(ax_loss=ax11,
-                        ax_residuals=ax12,
-                        sts=sts_L,
-                        binsize=binsize,
-                        dither=dither * pq.s,
-                        fontsize=fontsize,
-                        n_surr=n_surr,
-                        epoch_length=epoch_length,
-                        winlen=winlen)
-    ax11.set_ylabel('')
-    ax11.get_legend().remove()
-
-    # hide ticklabels of first ISI figure
-    plt.setp(ax11.get_xticklabels(), visible=False)
-
-    ax12.set_ylabel('')
-    ax11.set_title('Monkey L', fontsize=10)
-
-    plt.rcParams.update({'font.size': 10})
-
-    # ################### Panel B & C ####################
-
-    gs_panel_b = gridspec.GridSpecFromSubplotSpec(
-        nrows=1, ncols=2,
-        subplot_spec=gsfig[1],
-        wspace=wspace_between_columns,
-        hspace=0.8)
-
-    gs_panel_c = gridspec.GridSpecFromSubplotSpec(
-        nrows=1, ncols=2,
-        subplot_spec=gsfig[2],
-        wspace=wspace_between_columns,
-        hspace=0.8)
-
-    plt.figtext(
-        x=0.055, y=0.57, s='B', fontsize=12, multialignment='center')
-
-    # figure Nikos
-
-    # figures ISI distribution of 2 example neurons
-
-    gs00 = gridspec.GridSpecFromSubplotSpec(
-        nrows=2, ncols=1,
-        subplot_spec=gs_panel_b[0],
-        hspace=0)
-    ax01 = fig.add_subplot(gs00[0])
-    plot_isi_surr(sts_N[10], ax01, dither=dither,
-                  show_xlabel=False, fontsize=fontsize,
-                  legend=True)
-
-    # hide ticklabels of first ISI figure
-    plt.setp(ax01.get_xticklabels(), visible=False)
-
-    ax02 = fig.add_subplot(gs00[1], sharex=ax01)
-    plot_isi_surr(sts_N[27], ax02, dither=dither,
-                  fontsize=fontsize)
-
-    gs01 = gridspec.GridSpecFromSubplotSpec(
-        nrows=1, ncols=2,
-        subplot_spec=gs_panel_c[0],
-        wspace=0.35)
-
-    # figure CV2 histogram
-    ax03 = fig.add_subplot(gs01[0])
-    plot_cv2(
-        sts_N, ax03, epoch_length=epoch_length, sep=sep, fontsize=fontsize)
-
-    # figure Dead time histogram
-    ax04 = fig.add_subplot(gs01[1])
-    plot_dt(sts_N, ax04, sorting_dead_time=sorting_deadtime['N'],
-            sep=sep, fontsize=fontsize)
-    ax04.set_ylabel('')
-
-    # figure Lilou
-
-    # figures ISI distribution of 2 example neurons
-
-    gs10 = gridspec.GridSpecFromSubplotSpec(
-        nrows=2, ncols=1,
-        subplot_spec=gs_panel_b[1], hspace=0)
-
-    ax11 = fig.add_subplot(gs10[0])
-    plot_isi_surr(sts_L[7], ax11, dither=dither,
-                  show_xlabel=False, fontsize=fontsize,
-                  legend=False)
-    ax11.set_ylabel('')
-
-    # hide ticklabels of first ISI figure
-    plt.setp(ax11.get_xticklabels(), visible=False)
-
-    ax12 = fig.add_subplot(gs10[1], sharex=ax11)
-    plot_isi_surr(sts_L[8], ax12, dither=dither,
-                  fontsize=fontsize)
-    ax12.set_ylabel('')
-
-    gs11 = gridspec.GridSpecFromSubplotSpec(
-        nrows=1, ncols=2,
-        subplot_spec=gs_panel_c[1],
-        wspace=0.35)
-
-    # figure CV2 histogram
-    ax13 = fig.add_subplot(gs11[0], sharex=ax03, sharey=ax03)
-    plot_cv2(sts_L, ax13, epoch_length=epoch_length, sep=sep,
-             fontsize=fontsize)
-    ax13.set_ylabel('')
-
-    # figure Dead time histogram
-    ax14 = fig.add_subplot(gs11[1], sharex=ax04, sharey=ax04)
-    plot_dt(sts_L, ax14, sorting_dead_time=sorting_deadtime['L'],
-            sep=sep, fontsize=fontsize)
-    ax14.set_ylabel('')
-
-    plt.figtext(
-        x=0.055, y=0.25, s='C', fontsize=12, multialignment='center')
+    
+    # Panel A: Spike count reduction analysis
+    column_spacing = 0.15
+    panel_a_grid = gridspec.GridSpecFromSubplotSpec(
+        1, 2, subplot_spec=main_grid[0], wspace=column_spacing)
+    
+    # Load and process data for both sessions
+    session_data = {}
+    for i, session in enumerate(sessions):
+        data_prefix = f'{data_type}_' if data_type != 'original' else ''
+        filename = f'{data_folder}{session}/{data_prefix}{epoch}_{trial_type}.npy'
+        session_data[session] = load_processed_spike_trains(filename)
+    
+    # Create subplots for each session
+    session_names = ['Monkey N', 'Monkey L']
+    for i, (session, session_name) in enumerate(zip(sessions, session_names)):
+        # Create subplot grid
+        subplot_grid = gridspec.GridSpecFromSubplotSpec(
+            nrows=2, ncols=1, subplot_spec=panel_a_grid[i],
+            hspace=0, height_ratios=[2, 1])
+        
+        ax_loss = fig.add_subplot(subplot_grid[0])
+        ax_residuals = fig.add_subplot(subplot_grid[1], sharex=ax_loss)
+        
+        # Plot spike count reduction
+        plot_spike_count_reduction(
+            ax_loss, ax_residuals, session_data[session], dither_amount * pq.s,
+            bin_size, n_surrogates, trial_length, window_length, fontsize)
+        
+        # Configure subplot appearance
+        if i == 1:  # Right panel
+            ax_loss.set_ylabel('')
+            ax_loss.get_legend().remove()
+            ax_residuals.set_ylabel('')
+        
+        plt.setp(ax_loss.get_xticklabels(), visible=False)
+        ax_loss.set_title(session_name, fontsize=10)
+    
+    # Add panel label
+    plt.figtext(x=0.055, y=0.95, s='A', fontsize=12, multialignment='center')
+    
+    # Panel B: ISI distributions
+    panel_b_grid = gridspec.GridSpecFromSubplotSpec(
+        nrows=1, ncols=2, subplot_spec=main_grid[1],
+        wspace=column_spacing, hspace=0.8)
+    
+    plt.figtext(x=0.055, y=0.57, s='B', fontsize=12, multialignment='center')
+    
+    # Example neuron indices for ISI plots
+    example_neurons = {'N': [10, 27], 'L': [7, 8]}
+    
+    for i, (session, session_name) in enumerate(zip(sessions, session_names)):
+        # Create subplot grid for ISI distributions
+        isi_grid = gridspec.GridSpecFromSubplotSpec(
+            nrows=2, ncols=1, subplot_spec=panel_b_grid[i], hspace=0)
+        
+        for j, neuron_idx in enumerate(example_neurons[session[0]]):
+            ax = fig.add_subplot(isi_grid[j])
+            
+            show_xlabel = (j == 1)  # Only bottom subplot gets x-label
+            show_ylabel = (i == 0)  # Only left column gets y-label
+            show_legend = (i == 0 and j == 0)  # Only top-left gets legend
+            
+            plot_isi_distribution(
+                session_data[session][neuron_idx], ax, dither_amount,
+                show_xlabel=show_xlabel, show_ylabel=show_ylabel,
+                fontsize=fontsize, show_legend=show_legend)
+            
+            if not show_xlabel:
+                plt.setp(ax.get_xticklabels(), visible=False)
+    
+    # Panel C: CV2 and dead time distributions
+    panel_c_grid = gridspec.GridSpecFromSubplotSpec(
+        nrows=1, ncols=2, subplot_spec=main_grid[2],
+        wspace=column_spacing, hspace=0.8)
+    
+    plt.figtext(x=0.055, y=0.25, s='C', fontsize=12, multialignment='center')
+    
+    # Create shared axes for consistent scaling
+    cv2_axes = []
+    dt_axes = []
+    
+    for i, (session, session_name) in enumerate(zip(sessions, session_names)):
+        # Create subplot grid for statistics
+        stats_grid = gridspec.GridSpecFromSubplotSpec(
+            nrows=1, ncols=2, subplot_spec=panel_c_grid[i], wspace=0.35)
+        
+        # CV2 distribution
+        if i == 0:
+            ax_cv2 = fig.add_subplot(stats_grid[0])
+            cv2_axes.append(ax_cv2)
+        else:
+            ax_cv2 = fig.add_subplot(stats_grid[0], sharex=cv2_axes[0], sharey=cv2_axes[0])
+            cv2_axes.append(ax_cv2)
+        
+        show_ylabel = (i == 0)
+        plot_cv2_distribution(
+            session_data[session], ax_cv2, trial_length, trial_separation,
+            fontsize=fontsize, show_ylabel=show_ylabel)
+        
+        # Dead time distribution
+        if i == 0:
+            ax_dt = fig.add_subplot(stats_grid[1])
+            dt_axes.append(ax_dt)
+        else:
+            ax_dt = fig.add_subplot(stats_grid[1], sharex=dt_axes[0], sharey=dt_axes[0])
+            dt_axes.append(ax_dt)
+        
+        plot_dead_time_distribution(
+            session_data[session], ax_dt, sorting_dead_times[session[0]],
+            trial_separation, fontsize=fontsize, show_ylabel=show_ylabel)
+    
+    # Align y-labels for better appearance
     fig.align_ylabels()
-
-    # plt.show()
+    
+    # Save figure
+    plt.rcParams.update({'font.size': 10})
     fig.savefig('../plots/fig_spikeloss_r2gstats.png')
-    # convert manually to eps
-    # inkscape fig2_spikeloss_r2gstats.pdf
-    # --export-eps=fig2_spikeloss_r2gstats.eps
     fig.savefig('../plots/fig_spikeloss_r2gstats.pdf')
 
 
-if __name__ == '__main__':
+def main():
+    """Main function to run the figure generation."""
     import yaml
     from yaml import Loader
-
+    
+    # Load configuration
     with open("configfile.yaml", 'r') as stream:
         config = yaml.load(stream, Loader=Loader)
-    # The sessions to analyze
+    
+    # Extract configuration parameters
     sessions = config['sessions']
-    # Magnitude of the binsize used
-    binsize = config['binsize'] * pq.s
-    # The winlen parameter for the SPADE analysis
-    winlen = config['winlen']
-    # Data being generated
-    processes = config['processes']
-    # SNR threshold
-    SNR_thresh = config['SNR_thresh']
-    # size for removal of synchrofacts from data
-    synchsize = config['synchsize']
-    # Firing rate threshold to exclude neurons
-    firing_rate_threshold = config['firing_rate_threshold']
-    # Dithering to use to generate surrogates in seconds
-    dither = config['dither']
-
+    bin_size = config['binsize'] * pq.s
+    window_length = config['winlen']
+    dither_amount = config['dither']
+    
+    # Analysis parameters
     epoch = 'movement'
-    trialtype = 'PGLF'
-    sep = 2 * winlen * binsize
-    max_refractory = 4 * pq.ms
-    sorting_deadtime = {'N': 1.26666 * pq.ms,
-                        'L': 1.6 * pq.ms}
+    trial_type = 'PGLF'
+    trial_separation = 2 * window_length * bin_size
+    sorting_dead_times = {
+        'N': 1.26666 * pq.ms,
+        'L': 1.6 * pq.ms
+    }
     data_path = '../data/concatenated_spiketrains/'
-    epoch_length = 0.5 * pq.s
-
+    trial_length = 0.5 * pq.s
+    n_surrogates = 100
+    fontsize = DEFAULT_FONTSIZE
+    
+    # Prepare data types
     data_types = ['original']
     data_types.extend(config['processes'])
-
-    data_type_fixed = 'original'
-    epoch_fixed = 'movement'
-    trialtype_fixed = 'PGHF'
-
-    n_surr = 100
-    fontsize = 9
-
-    for epoch, trialtype, data_type in itertools.product(
+    
+    # Fixed parameters for specific analysis
+    fixed_data_type = 'original'
+    fixed_epoch = 'movement'
+    fixed_trial_type = 'PGHF'
+    
+    # Generate figures for specified conditions
+    for current_epoch, current_trial_type, current_data_type in itertools.product(
             config['epochs'], config['trialtypes'], data_types):
-        if not (data_type == data_type_fixed
-                and trialtype == trialtype_fixed
-                and epoch == epoch_fixed):
+        
+        # Skip unless matching fixed conditions
+        if not (current_data_type == fixed_data_type and 
+                current_trial_type == fixed_trial_type and 
+                current_epoch == fixed_epoch):
             continue
-
-        if data_type == 'original':
-            sts_folder = '../data/concatenated_spiketrains/'
+        
+        # Determine data folder
+        if current_data_type == 'original':
+            data_folder = '../data/concatenated_spiketrains/'
         else:
-            sts_folder = f'../data/artificial_data/{data_type}/'
+            data_folder = f'../data/artificial_data/{current_data_type}/'
+        
+        # Create figure
+        create_spike_count_reduction_figure(
+            data_folder, sessions, current_epoch, current_trial_type,
+            dither_amount, bin_size, n_surrogates, window_length,
+            trial_length, sorting_dead_times, trial_separation,
+            fontsize, data_type='original')
 
-        fig_2(sts_folder, sessions, epoch, trialtype, dither, binsize,
-              n_surr, winlen, epoch_length, sorting_deadtime, sep,
-              fontsize, data_type='original')
+
+if __name__ == '__main__':
+    main()
