@@ -88,7 +88,7 @@ def extract_trial_count_from_concatenated_data(spike_trains, config_params=None)
     return None
 
 
-def calculate_dynamic_abs_min_occ(session, epoch, trialtype, process='original'):
+def calculate_dynamic_abs_min_occ(session, epoch, trialtype, process='original', spike_trains=None, config_params=None):
     """
     Calculate dynamic abs_min_occ as 1/3 of the number of trials, ceiled.
     
@@ -107,85 +107,93 @@ def calculate_dynamic_abs_min_occ(session, epoch, trialtype, process='original')
     process : str, optional
         Point process model being analyzed ('original', 'ppd', 'gamma')
         Default: 'original'
+    spike_trains : list, optional
+        Pre-loaded spike trains (avoids redundant file loading)
+    config_params : dict, optional
+        Pre-loaded configuration parameters (avoids redundant file loading)
         
     Returns
     -------
     int
         Dynamic abs_min_occ value (1/3 of trials, ceiled)
     """
-    # Define data paths based on process type
-    data_paths = {
-        'original': '../../data/concatenated_spiketrains/',
-        'ppd': '../../data/artificial_data/ppd/',
-        'gamma': '../../data/artificial_data/gamma/'
-    }
-    
-    if process not in data_paths:
-        raise ValueError(f"Process must be one of {list(data_paths.keys())}, got '{process}'")
-    
-    data_path = data_paths[process]
-    
-    # Load spike train data to extract trial count
-    if process == 'original':
-        filename = f'{data_path}{session}/{epoch}_{trialtype}.npy'
-    else:
-        filename = f'{data_path}{session}/{process}_{epoch}_{trialtype}.npy'
-    
-    try:
-        spike_trains = load_processed_spike_trains(filename)
+    # Use provided spike_trains or load if not provided
+    if spike_trains is None:
+        # Define data paths based on process type
+        data_paths = {
+            'original': '../../data/concatenated_spiketrains/',
+            'ppd': '../../data/artificial_data/ppd/',
+            'gamma': '../../data/artificial_data/gamma/'
+        }
         
-        if not spike_trains:
-            print(f"  Warning: No spike trains found for {session} {epoch} {trialtype}")
-            return 10
+        if process not in data_paths:
+            raise ValueError(f"Process must be one of {list(data_paths.keys())}, got '{process}'")
         
-        # Load configuration for duration-based estimation
-        config_params = None
+        data_path = data_paths[process]
+        
+        # Load spike train data to extract trial count
+        if process == 'original':
+            filename = f'{data_path}{session}/{epoch}_{trialtype}.npy'
+        else:
+            filename = f'{data_path}{session}/{process}_{epoch}_{trialtype}.npy'
+        
+        try:
+            spike_trains = load_processed_spike_trains(filename)
+        except Exception as e:
+            print(f"  Warning: Could not load data for {session} {epoch} {trialtype}: {e}")
+            # Fallback to the standard default if data can't be loaded
+            default_trials = 30  # Standard default as specified
+            default_abs_min_occ = math.ceil(default_trials / 3.0)
+            print(f"  Using fallback: {default_trials} trials -> abs_min_occ = {default_abs_min_occ}")
+            return default_abs_min_occ
+    
+    if not spike_trains:
+        print(f"  Warning: No spike trains found for {session} {epoch} {trialtype}")
+        return 10
+    
+    # Use provided config_params or load if not provided
+    if config_params is None:
         try:
             with open("../configfile.yaml", 'r') as stream:
                 config_params = yaml.load(stream, Loader=Loader)
         except Exception:
-            pass
+            config_params = {}
+    
+    # Extract trial count using the dedicated function
+    n_trials = extract_trial_count_from_concatenated_data(spike_trains, config_params)
+    
+    # If we still don't have a trial count, this indicates a problem since 
+    # trial count should always be determinable from the trialtype
+    if n_trials is None:
+        print(f"  ERROR: Could not determine trial count for {session} {epoch} {trialtype}")
+        print(f"    This is unexpected since trial count depends on trialtype")
+        print(f"    Using fallback default, but you should investigate the data structure")
         
-        # Extract trial count using the dedicated function
-        n_trials = extract_trial_count_from_concatenated_data(spike_trains, config_params)
-        
-        # If we still don't have a trial count, this indicates a problem since 
-        # trial count should always be determinable from the trialtype
-        if n_trials is None:
-            print(f"  ERROR: Could not determine trial count for {session} {epoch} {trialtype}")
-            print(f"    This is unexpected since trial count depends on trialtype")
-            print(f"    Using fallback default, but you should investigate the data structure")
-            
-            # Use the standard default trial count
-            n_trials = 30  # Standard default as specified
-            print(f"    Using default: {n_trials} trials")
-        
-        # Ensure we have a reasonable number
-        if n_trials < 3:
-            print(f"  Warning: Very few trials ({n_trials}), using minimum of 3")
-            n_trials = 3
-        elif n_trials > 1000:
-            print(f"  Warning: Very many trials ({n_trials}), capping at 1000")
-            n_trials = 1000
-        
-        # Calculate 1/3 of trials, ceiled
-        dynamic_abs_min_occ = math.ceil(n_trials / 3.0)
-        
-        print(f"  {session} {epoch} {trialtype}: {n_trials} trials -> abs_min_occ = {dynamic_abs_min_occ}")
-        return dynamic_abs_min_occ
-        
-    except Exception as e:
-        print(f"  Warning: Could not load data for {session} {epoch} {trialtype}: {e}")
-        # Fallback to the standard default if data can't be loaded
-        default_trials = 30  # Standard default as specified
-        default_abs_min_occ = math.ceil(default_trials / 3.0)
-        print(f"  Using fallback: {default_trials} trials -> abs_min_occ = {default_abs_min_occ}")
-        return default_abs_min_occ
+        # Use the standard default trial count
+        n_trials = 30  # Standard default as specified
+        print(f"    Using default: {n_trials} trials")
+    
+    # Ensure we have a reasonable number
+    if n_trials < 3:
+        print(f"  Warning: Very few trials ({n_trials}), using minimum of 3")
+        n_trials = 3
+    elif n_trials > 1000:
+        print(f"  Warning: Very many trials ({n_trials}), capping at 1000")
+        n_trials = 1000
+    
+    # Calculate 1/3 of trials, ceiled
+    dynamic_abs_min_occ = math.ceil(n_trials / 3.0)
+    
+    print(f"  {session} {epoch} {trialtype}: {n_trials} trials -> abs_min_occ = {dynamic_abs_min_occ}")
+    return dynamic_abs_min_occ
 
 
-def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='original'):
+def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='original', config_params=None):
     """
     Create rate dictionary for estimating expected pattern occurrences.
+    
+    Important: For concatenated spike trains with buffer periods, the effective duration
+    is n_trials * epoch_duration, not the full data_duration which includes buffers.
 
     Parameters
     ----------
@@ -202,6 +210,8 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
     process : str, optional
         Point process model being analyzed ('original', 'ppd', 'gamma')
         Default: 'original'
+    config_params : dict, optional
+        Pre-loaded configuration parameters (avoids redundant file loading)
 
     Returns
     -------
@@ -210,6 +220,8 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
         - 'rates': sorted rates in descending order
         - 'n_bins': total number of bins
         - 'rates_ordered_by_neuron': rates ordered by neuron ID
+        - 'effective_duration': effective duration excluding buffer periods
+        - 'n_trials': number of trials
     """
     # Define data paths based on process type
     data_paths = {
@@ -231,15 +243,33 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
     
     spike_trains = load_processed_spike_trains(filename)
     
-    # Calculate basic statistics
-    data_duration = spike_trains[0].t_stop
-    n_bins = int(data_duration / binsize)
+    # Use provided config_params or load if not provided
+    if config_params is None:
+        try:
+            with open("../configfile.yaml", 'r') as stream:
+                config_params = yaml.load(stream, Loader=Loader)
+        except Exception:
+            config_params = {}
     
-    # Compute firing rates for each neuron
+    # Extract trial count
+    n_trials = extract_trial_count_from_concatenated_data(spike_trains, config_params)
+    if n_trials is None:
+        # Fallback to default
+        n_trials = 30
+        print(f"  Warning: Could not determine trial count, using default: {n_trials}")
+    
+    # Calculate effective duration (excluding buffer periods)
+    epoch_duration = config_params.get('epoch_duration', 0.5)  # Default 500ms
+    effective_duration = n_trials * epoch_duration * pq.s
+    
+    # Calculate number of bins based on effective duration
+    n_bins = int(effective_duration / binsize)
+    
+    # Compute firing rates for each neuron using effective duration
     firing_rates = []
     for spike_train in spike_trains:
         spike_count = len(spike_train)
-        firing_rate = spike_count / float(data_duration)
+        firing_rate = spike_count / float(effective_duration)
         firing_rates.append(firing_rate)
     
     # Create rate dictionary
@@ -247,7 +277,10 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
     rates_dict = {
         'rates': sorted_rates,
         'n_bins': n_bins,
-        'rates_ordered_by_neuron': firing_rates
+        'rates_ordered_by_neuron': firing_rates,
+        'effective_duration': float(effective_duration),  # Store for reference
+        'n_trials': n_trials,
+        'epoch_duration': epoch_duration
     }
     
     # Ensure output directory exists
@@ -255,6 +288,9 @@ def create_rate_dict(session, epoch, trialtype, rates_path, binsize, process='or
     
     # Save rates dictionary
     np.save(os.path.join(rates_path, 'rates.npy'), rates_dict)
+    
+    print(f"  Firing rates calculated using effective duration: {effective_duration} (n_trials={n_trials})")
+    print(f"  Max firing rate: {max(firing_rates):.3f} Hz, Min: {min(firing_rates):.3f} Hz")
     
     return rates_dict
 
@@ -438,6 +474,8 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     """
     Process a single experimental condition (session, epoch, trialtype combination).
     
+    Optimized to load spike trains and config only once per condition.
+    
     Parameters
     ----------
     process : str
@@ -449,7 +487,7 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     trialtype : str
         Trial type
     config_params : dict
-        Configuration parameters
+        Configuration parameters (pre-loaded)
     excluded_neurons : dict
         Dictionary tracking excluded neurons per session
     param_dict : dict
@@ -457,8 +495,35 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     pattern_sizes : list
         List of pattern sizes to analyze
     """
-    # Calculate dynamic abs_min_occ for this specific condition
-    dynamic_abs_min_occ = calculate_dynamic_abs_min_occ(session, epoch, trialtype, process)
+    # Load spike train data once for this condition
+    data_paths = {
+        'original': '../../data/concatenated_spiketrains/',
+        'ppd': '../../data/artificial_data/ppd/',
+        'gamma': '../../data/artificial_data/gamma/'
+    }
+    
+    data_path = data_paths[process]
+    
+    if process == 'original':
+        filename = f'{data_path}{session}/{epoch}_{trialtype}.npy'
+    else:
+        filename = f'{data_path}{session}/{process}_{epoch}_{trialtype}.npy'
+    
+    try:
+        spike_trains = load_processed_spike_trains(filename)
+        if not spike_trains:
+            print(f"  Warning: No spike trains found for {session} {epoch} {trialtype}")
+            return
+    except Exception as e:
+        print(f"  Warning: Could not load data for {session} {epoch} {trialtype}: {e}")
+        return
+    
+    # Calculate dynamic abs_min_occ using pre-loaded data
+    dynamic_abs_min_occ = calculate_dynamic_abs_min_occ(
+        session, epoch, trialtype, process, 
+        spike_trains=spike_trains, 
+        config_params=config_params
+    )
     
     # Determine rates file path
     if process == 'original':
@@ -466,7 +531,7 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
     else:
         rates_path = f'../../results/artificial_data/{process}/rates/{session}/{epoch}_{trialtype}'
     
-    # Load or create rate dictionary
+    # Load or create rate dictionary (passing pre-loaded config)
     rates_file = os.path.join(rates_path, 'rates.npy')
     if os.path.exists(rates_file):
         rates_dict = np.load(rates_file, allow_pickle=True).item()
@@ -478,7 +543,8 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
             trialtype=trialtype,
             rates_path=rates_path,
             binsize=config_params['binsize'],
-            process=process
+            process=process,
+            config_params=config_params  # Pass pre-loaded config
         )
     
     # Extract rate information
@@ -573,6 +639,22 @@ def _process_single_condition(process, session, epoch, trialtype, config_params,
             process=process
         )
         
+        print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, dynamic_abs_min_occ)}")'],
+            'dither': config_params['dither'],
+            'spectrum': config_params['spectrum'],
+            'abs_min_spikes': config_params['abs_min_spikes']
+        }
+        
+        # Store parameters using pattern_size as key
+        _store_analysis_parameters(
+            param_dict=param_dict,
+            session=session,
+            context=context,
+            pattern_size=pattern_size,
+            analysis_params=analysis_params,
+            process=process
+        )
+        
         print(f"    Pattern size {pattern_size}: min_occ = {max(min_occ, dynamic_abs_min_occ)}")
 
 
@@ -584,10 +666,13 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
     and proper multiple comparisons correction. Now uses dynamic abs_min_occ
     calculated as 1/3 of the number of trials (ceiled) for each condition.
     
+    Optimized to minimize redundant file I/O and function calls.
+    
     NOTE: In this experimental setup:
     - Each epoch duration is configurable (default 500ms)
-    - Trial count depends on the trialtype (not session-specific)
+    - Trial count depends on both session and trialtype (but not epoch)
     - Default trial count is 30 if cannot be determined
+    - Effective duration = n_trials × epoch_duration (excludes buffer periods)
 
     Parameters
     ----------
@@ -598,7 +683,7 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
     trialtypes : list of str
         Trial types to analyze
     config_params : dict
-        Configuration parameters containing analysis settings
+        Configuration parameters containing analysis settings (pre-loaded)
     processes : tuple of str, optional
         Process types to analyze ('original', 'ppd', 'gamma')
         Default: ('original',)
@@ -621,7 +706,9 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
     print(f"Processes: {processes}")
     print(f"Epoch duration: {config_params.get('epoch_duration', 0.5)}s")
     print("abs_min_occ will be calculated dynamically as ceil(n_trials/3) for each condition")
-    print("NOTE: Trial count is trialtype-specific with configurable epoch duration, default=30 trials")
+    print("NOTE: Trial count depends on both session and trialtype (but not epoch)")
+    print("NOTE: Firing rates calculated using effective duration (n_trials × epoch_duration), excluding buffer periods")
+    print("NOTE: Optimized to minimize redundant file I/O operations")
     
     # Initialize storage
     param_dict = {}
@@ -659,7 +746,7 @@ def estimate_pattern_occurrences(sessions, epochs, trialtypes, config_params, pr
                         session=session,
                         epoch=epoch,
                         trialtype=trialtype,
-                        config_params=config_params,
+                        config_params=config_params,  # Pass pre-loaded config
                         excluded_neurons=excluded_neurons,
                         param_dict=param_dict,
                         pattern_sizes=pattern_sizes
