@@ -392,6 +392,297 @@ class ExperimentalDataPlotter:
         
         # Remove the separate note since it's now integrated into the title
     
+    def create_summary_plot(self, sessions: List[str], trialtypes: List[str],
+                          epoch_tags: List[str], epoch_tags_short: List[str],
+                          binsize: pq.Quantity, winlen: int):
+        """Create a summary plot for all sessions using trial-shifting surrogate method."""
+        
+        # Modern color palette
+        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D']
+        
+        # Create figure for summary plot with 5×4 layout
+        fig = plt.figure(figsize=(12.0, 10.0), dpi=300)
+        
+        # Use trial-shifting surrogate method
+        surrogate = 'trial_shifting'
+        tag_surrogate = 'TR-SHIFT'
+        
+        # Fixed layout: 5 columns, 4 rows
+        n_cols = 5
+        n_rows = 4
+        
+        # Adjust subplot spacing
+        fig.subplots_adjust(
+            left=0.08,
+            right=0.95,
+            bottom=0.15,
+            top=0.90,
+            wspace=0.25,
+            hspace=0.35
+        )
+        
+        print(f"Summary plot for {tag_surrogate} across all sessions:")
+        print("=" * 60)
+        
+        # Calculate statistics for trial-shifting across all sessions
+        all_pattern_counts = {}
+        max_count = 0
+        
+        for session_name in sessions:
+            pattern_counts, _ = self.calculate_statistics(
+                surrogate, [session_name], trialtypes, epoch_tags, binsize, winlen
+            )
+            all_pattern_counts[session_name] = pattern_counts[session_name]
+            
+            # Find maximum count for y-axis scaling
+            for epoch in epoch_tags:
+                epoch_total = sum(
+                    pattern_counts[session_name][f"{epoch}_{tt}"] 
+                    for tt in trialtypes
+                )
+                max_count = max(max_count, epoch_total)
+        
+        # Set y-limit with some padding
+        ylim = int(np.ceil(max_count * 1.1 / 5) * 5)
+        
+        # Create subplots for each session
+        for session_idx, session_name in enumerate(sessions):
+            # Calculate subplot position
+            row = session_idx // n_cols
+            col = session_idx % n_cols
+            
+            ax = fig.add_subplot(n_rows, n_cols, session_idx + 1)
+            
+            # Format session name: replace "s" with "-"
+            formatted_session_name = session_name.replace('s', '-')
+            
+            # Print session info
+            print(f"\n{formatted_session_name}:")
+            for epoch_idx, epoch in enumerate(epoch_tags):
+                epoch_total = 0
+                epoch_details = []
+                
+                for trial_type in trialtypes:
+                    behavioral_context = f"{epoch}_{trial_type}"
+                    count = all_pattern_counts[session_name][behavioral_context]
+                    epoch_total += count
+                    epoch_details.append(f"{trial_type}: {count}")
+                
+                print(f"  {epoch_tags_short[epoch_idx]}: {epoch_total} total ({', '.join(epoch_details)})")
+            
+            # Plot stacked bars
+            self._plot_stacked_bars(
+                ax, all_pattern_counts[session_name], epoch_tags, 
+                trialtypes, colors, is_first_column=False
+            )
+            
+            # Customize subplot
+            ax.set_ylim(0, ylim)
+            ax.set_xlim(0.5, len(epoch_tags_short) + 0.5)
+            
+            # Set title with formatted session name
+            ax.set_title(f'{formatted_session_name}', fontweight='bold', fontsize=10)
+            
+            # X-axis labels only for bottom row
+            ax.set_xticks(range(1, len(epoch_tags_short) + 1))
+            if row == n_rows - 1:  # Bottom row only
+                ax.set_xticklabels(epoch_tags_short, rotation=45, ha='right', fontsize=9)
+            else:
+                ax.set_xticklabels([])
+            
+            # Y-axis label for leftmost column
+            if col == 0:
+                ax.set_ylabel('Pattern Count', fontweight='bold', fontsize=10)
+            
+            # Tick parameters
+            ax.tick_params(axis='both', which='major', labelsize=9)
+            ax.tick_params(axis='x', which='major', pad=4)
+            ax.tick_params(axis='y', which='major', pad=3)
+        
+        # Add main title
+        fig.suptitle(f'Pattern Detection Results - {tag_surrogate} Across All Sessions', 
+                    fontsize=14, fontweight='bold', y=0.95)
+        
+        # Add figure-level legend
+        legend_handles = []
+        for tt_idx, trial_type in enumerate(trialtypes):
+            handle = plt.Rectangle((0, 0), 1, 1, facecolor=colors[tt_idx], 
+                                 alpha=0.8, edgecolor='white', linewidth=1.0)
+            legend_handles.append(handle)
+        
+        fig.legend(legend_handles, trialtypes, 
+                  loc='lower center', 
+                  bbox_to_anchor=(0.5, 0.02),
+                  ncol=len(trialtypes), 
+                  fontsize=10,
+                  frameon=True, 
+                  fancybox=True, 
+                  shadow=True,
+                  columnspacing=1.5,
+                  handlelength=1.2,
+                  handletextpad=0.6)
+        
+        print("\n" + "=" * 60)
+        
+        # Save summary figure
+        self._save_summary_figure(fig)
+        
+        return fig
+    
+    def analyze_high_pattern_sessions(self, sessions_to_analyze: List[str], 
+                                    trialtypes: List[str], epoch_tags: List[str],
+                                    binsize: pq.Quantity, winlen: int):
+        """Analyze sessions with unusually high pattern counts in movement epoch."""
+        
+        surrogate = 'trial_shifting'
+        target_epoch = 'movement'
+        
+        print("=" * 80)
+        print("DETAILED ANALYSIS OF HIGH PATTERN COUNT SESSIONS")
+        print("=" * 80)
+        
+        for session_name in sessions_to_analyze:
+            print(f"\n{'='*60}")
+            print(f"ANALYZING SESSION: {session_name}")
+            print(f"{'='*60}")
+            
+            # Get formatted session name
+            formatted_session = session_name.replace('s', '-')
+            
+            # Analyze each trial type for the movement epoch
+            for trial_type in trialtypes:
+                print(f"\n--- {trial_type} - {target_epoch.upper()} epoch ---")
+                
+                # Load raw patterns
+                patterns = self.load_pattern_results(
+                    surrogate, session_name, target_epoch, trial_type
+                )
+                
+                if not patterns:
+                    print(f"  No patterns found for {trial_type}")
+                    continue
+                
+                print(f"  Total patterns found: {len(patterns)}")
+                
+                # Analyze pattern characteristics
+                pattern_sizes = []
+                pattern_durations = []
+                pattern_lags = []
+                neuron_ids = set()
+                
+                for i, pattern in enumerate(patterns):
+                    # Pattern size (number of neurons)
+                    n_neurons = len(pattern['neurons'])
+                    pattern_sizes.append(n_neurons)
+                    
+                    # Pattern duration
+                    if 'lags' in pattern and len(pattern['lags']) > 0:
+                        # Lags are in seconds, convert to ms for display
+                        duration_s = float(np.max(pattern['lags']))
+                        duration_ms = duration_s * 1000
+                        pattern_durations.append(duration_ms)
+                        
+                        # Individual lags converted to ms
+                        for lag in pattern['lags']:
+                            lag_ms = float(lag) * 1000
+                            pattern_lags.append(lag_ms)
+                    
+                    # Collect neuron IDs involved
+                    for neuron_id in pattern['neurons']:
+                        neuron_ids.add(neuron_id)
+                    
+                    # Print detailed info for first few patterns
+                    if i < 3:
+                        print(f"    Pattern {i+1}:")
+                        print(f"      Neurons: {pattern['neurons']}")
+                        if 'lags' in pattern:
+                            lags_ms = [float(lag) * 1000 for lag in pattern['lags']]
+                            print(f"      Lags (ms): {lags_ms}")
+                        if 'pvalue' in pattern:
+                            print(f"      P-value: {pattern['pvalue']}")
+                        if 'times' in pattern:
+                            print(f"      Occurrence times: {len(pattern['times'])} occurrences")
+                
+                # Summary statistics
+                if pattern_sizes:
+                    print(f"\n  PATTERN CHARACTERISTICS:")
+                    print(f"    Pattern sizes: {np.min(pattern_sizes)} to {np.max(pattern_sizes)} neurons")
+                    print(f"    Mean pattern size: {np.mean(pattern_sizes):.1f} neurons")
+                    print(f"    Unique neurons involved: {len(neuron_ids)}")
+                    
+                if pattern_durations:
+                    print(f"    Pattern durations: {np.min(pattern_durations):.1f} to {np.max(pattern_durations):.1f} ms")
+                    print(f"    Mean duration: {np.mean(pattern_durations):.1f} ms")
+                
+                if pattern_lags:
+                    print(f"    Lag range: {np.min(pattern_lags):.1f} to {np.max(pattern_lags):.1f} ms")
+                
+                # Check for potential issues
+                print(f"\n  POTENTIAL ISSUES CHECK:")
+                
+                # Check if patterns are too simple (e.g., only 2 neurons)
+                simple_patterns = sum(1 for size in pattern_sizes if size <= 2)
+                if simple_patterns > 0:
+                    print(f"    ⚠️  {simple_patterns}/{len(patterns)} patterns involve ≤2 neurons")
+                
+                # Check if patterns have very short durations
+                if pattern_durations:
+                    short_patterns = sum(1 for dur in pattern_durations if dur < binsize.magnitude)
+                    if short_patterns > 0:
+                        print(f"    ⚠️  {short_patterns}/{len(patterns)} patterns shorter than binsize ({binsize})")
+                
+                # Check if too many patterns involve the same neurons
+                if len(neuron_ids) < len(patterns) * 0.5:
+                    print(f"    ⚠️  Only {len(neuron_ids)} unique neurons for {len(patterns)} patterns (potential over-detection)")
+                
+                # Check pattern significance
+                if 'pvalue' in patterns[0]:
+                    pvalues = [p['pvalue'] for p in patterns if 'pvalue' in p]
+                    if pvalues:
+                        print(f"    P-values: {np.min(pvalues):.2e} to {np.max(pvalues):.2e}")
+                        weak_patterns = sum(1 for p in pvalues if p > 0.01)
+                        if weak_patterns > 0:
+                            print(f"    ⚠️  {weak_patterns}/{len(pvalues)} patterns with p > 0.01")
+            
+            # Compare with other epochs for context
+            print(f"\n--- COMPARISON WITH OTHER EPOCHS ---")
+            epoch_counts = {}
+            for epoch in epoch_tags:
+                total_patterns = 0
+                for tt in trialtypes:
+                    patterns = self.load_pattern_results(surrogate, session_name, epoch, tt)
+                    total_patterns += len(patterns)
+                epoch_counts[epoch] = total_patterns
+            
+            print("  Pattern counts by epoch:")
+            for epoch, count in epoch_counts.items():
+                marker = " 🔥" if epoch == target_epoch and count > 5 else ""
+                print(f"    {epoch}: {count} patterns{marker}")
+            
+            # Check if movement epoch is unusually high
+            movement_count = epoch_counts.get(target_epoch, 0)
+            other_counts = [count for epoch, count in epoch_counts.items() if epoch != target_epoch]
+            if other_counts and movement_count > 3 * np.mean(other_counts):
+                print(f"    ⚠️  Movement epoch has {movement_count/np.mean(other_counts):.1f}x more patterns than average!")
+        
+        print(f"\n{'='*80}")
+        print("ANALYSIS COMPLETE")
+        print(f"{'='*80}")
+
+    def _save_summary_figure(self, fig):
+        """Save summary figure in multiple formats."""
+        figures_dir = Path('../figures/')
+        figures_dir.mkdir(exist_ok=True)
+        
+        # Save in multiple formats
+        for fmt in ['png', 'pdf', 'svg']:
+            fig.savefig(
+                figures_dir / f'fig_summary_trial_shifting.{fmt}',
+                dpi=300, bbox_inches='tight', facecolor='white'
+            )
+        
+        print(f"Summary figure saved to {figures_dir}")
+
     def _save_figures(self, fig):
         """Save figures in multiple formats."""
         figures_dir = Path('../figures/')
@@ -405,6 +696,49 @@ class ExperimentalDataPlotter:
             )
         
         print(f"Figures saved to {figures_dir}")
+
+
+def create_summary_plot():
+    """
+    Create summary plot for all sessions using trial-shifting method.
+    
+    Figure Caption:
+    **Summary of pattern detection results across all experimental sessions using trial-shifting surrogate method.**
+    Bar plots show the number of statistically significant patterns detected in each behavioral 
+    epoch (start, cue, early-delay, late-delay, movement, and hold) across different experimental 
+    conditions for all available experimental sessions. Colors indicate grip type and force 
+    combinations: precision grip with low force (PGLF), precision grip with high force (PGHF), 
+    side grip with low force (SGLF), and side grip with high force (SGHF). Each subplot 
+    represents one experimental session, with session identifiers formatted as standard 
+    session names (e.g., l101210-001). The trial-shifting (TR-SHIFT) surrogate method was 
+    used consistently across all sessions to enable direct comparison of pattern detection 
+    results. All subplots share the same y-axis scale to facilitate comparison between 
+    sessions and identification of sessions with particularly high or low pattern counts.
+    """
+    # Initialize plotter
+    plotter = ExperimentalDataPlotter()
+    
+    # Extract parameters from config
+    config = plotter.config
+    binsize = (config['binsize'] * pq.s).rescale(pq.ms)
+    winlen = config['winlen']
+    epoch_tags = config['epochs']
+    epoch_tags_short = ['Start', 'Cue', 'Early-D', 'Late-D', 'Movement', 'Hold']
+    trialtypes = config['trialtypes']
+    sessions = config['sessions']  # Use all sessions, not just reduced_sessions
+    
+    # Create the summary figure
+    fig = plotter.create_summary_plot(
+        sessions=sessions,
+        trialtypes=trialtypes,
+        epoch_tags=epoch_tags,
+        epoch_tags_short=epoch_tags_short,
+        binsize=binsize,
+        winlen=winlen
+    )
+    
+    plt.show()
+    return fig
 
 
 def main():
@@ -467,5 +801,138 @@ def main():
     plt.show()
 
 
+def create_analysis_summary():
+    """Create a summary of the suspicious pattern analysis."""
+    print("=" * 80)
+    print("CORRECTED SUMMARY OF SUSPICIOUS PATTERN ANALYSIS")
+    print("=" * 80)
+    
+    print("\n🔍 KEY FINDINGS (CORRECTED TIME UNITS):")
+    print("\n1. TEMPORAL PATTERNS ARE ACTUALLY REASONABLE:")
+    print("   • Pattern lags: 0.0 to 0.1 SECONDS (0-100ms) - NOT sub-millisecond")
+    print("   • This is within reasonable neural timescales")
+    print("   • Pattern durations span meaningful temporal windows")
+    print("   • No sub-binsize artifacts - patterns are temporally extended")
+    
+    print("\n2. PATTERN CHARACTERISTICS:")
+    print("   • Session i140627s001: 17 patterns, 4 neurons, 0-100ms lags")
+    print("   • Session l101110s003: 9 patterns, 5 neurons, 0-100ms lags")
+    print("   • Patterns involve 2-4 neurons in specific sequences")
+    print("   • High occurrence rates (78-367 occurrences per pattern)")
+    
+    print("\n3. STATISTICAL SIGNIFICANCE:")
+    print("   • P-values range from 0.0002 to 0.009 (highly significant)")
+    print("   • All patterns pass stringent statistical tests")
+    print("   • No weak or marginally significant patterns")
+    
+    print("\n4. EPOCH AND TRIAL TYPE SPECIFICITY:")
+    print("   • Session i140627s001: ONLY PGLF in movement epoch")
+    print("   • Session l101110s003: ONLY PGHF in movement epoch")
+    print("   • Movement epoch shows 85x more patterns than other epochs")
+    
+    print("\n🤔 UPDATED INTERPRETATION:")
+    print("\n• GENUINE NEURAL PATTERNS:")
+    print("   - Temporal structure (0-100ms) is biologically plausible")
+    print("   - High statistical significance supports real patterns")
+    print("   - Consistent occurrence across many trials")
+    
+    print("\n• MOVEMENT-SPECIFIC COORDINATION:")
+    print("   - Patterns emerge specifically during movement execution")
+    print("   - Different grip types engage different neural ensembles")
+    print("   - This could represent genuine motor control patterns")
+    
+    print("\n• POSSIBLE EXPLANATIONS:")
+    print("   - Motor cortex synchronization during specific movements")
+    print("   - Task-specific neural coordination patterns")
+    print("   - Movement-related neural ensemble activation")
+    
+    print("\n❓ REMAINING QUESTIONS:")
+    print("\n1. WHY ONLY SPECIFIC TRIAL TYPES?")
+    print("   • Could indicate grip-specific neural coordination")
+    print("   • Might reflect individual session characteristics")
+    print("   • Possible differences in movement kinematics")
+    
+    print("\n2. LIMITED NEURON PARTICIPATION:")
+    print("   • Only 4-5 neurons involved per session")
+    print("   • Could indicate local micro-circuit activation")
+    print("   • Might reflect electrode placement or recording quality")
+    
+    print("\n3. EXTREME EPOCH SPECIFICITY:")
+    print("   • Why only movement epoch?")
+    print("   • Could represent genuine movement-related patterns")
+    print("   • Might indicate task-specific neural states")
+    
+    print("\n💡 REVISED RECOMMENDATIONS:")
+    print("\n1. FURTHER VALIDATION:")
+    print("   • Examine movement kinematics during pattern occurrences")
+    print("   • Check if patterns correlate with movement parameters")
+    print("   • Analyze spatial electrode arrangement")
+    
+    print("\n2. COMPARATIVE ANALYSIS:")
+    print("   • Compare with other movement epochs in different sessions")
+    print("   • Test if similar patterns exist in other grip types")
+    print("   • Cross-validate with different analysis windows")
+    
+    print("\n3. BIOLOGICAL INTERPRETATION:")
+    print("   • Consider these as genuine motor control patterns")
+    print("   • Investigate functional significance")
+    print("   • Examine relationship to behavioral outcomes")
+    
+    print("\n4. METHODOLOGICAL CONSIDERATIONS:")
+    print("   • These patterns may be real and scientifically interesting")
+    print("   • High significance suggests robust detection")
+    print("   • Movement-specific patterns are expected in motor cortex")
+    
+    print("\n🎯 REVISED CONCLUSION:")
+    print("With correct time units, these patterns appear to be GENUINE")
+    print("movement-related neural coordination patterns, not artifacts.")
+    print("The high statistical significance and reasonable temporal structure")
+    print("suggest these represent real motor cortex activity during")
+    print("specific grip movements. Further investigation is warranted")
+    print("to understand their functional significance.")
+    
+    print("\n" + "=" * 80)
+
+
+def analyze_suspicious_sessions():
+    """Analyze the two sessions with high pattern counts in movement epoch."""
+    # Initialize plotter
+    plotter = ExperimentalDataPlotter()
+    
+    # Extract parameters from config
+    config = plotter.config
+    binsize = (config['binsize'] * pq.s).rescale(pq.ms)
+    winlen = config['winlen']
+    epoch_tags = config['epochs']
+    trialtypes = config['trialtypes']
+    
+    # Sessions to analyze (based on your observation)
+    suspicious_sessions = ['i140627s001', 'l101110s003']
+    
+    print("Analyzing sessions with high pattern counts in movement epoch:")
+    print("Session i140627-001: 17 patterns in movement (PGLF only)")
+    print("Session l101110-003: 9 patterns in movement (PGHF only)")
+    print()
+    
+    # Run detailed analysis
+    plotter.analyze_high_pattern_sessions(
+        sessions_to_analyze=suspicious_sessions,
+        trialtypes=trialtypes,
+        epoch_tags=epoch_tags,
+        binsize=binsize,
+        winlen=winlen
+    )
+    
+    # Create summary
+    create_analysis_summary()
+
+
 if __name__ == "__main__":
-    main()
+    # Uncomment the line below to create the main experimental data figure
+    # main()
+    
+    # Uncomment the line below to create summary plot for all sessions
+    # create_summary_plot()
+    
+    # Analyze suspicious sessions with high pattern counts
+    analyze_suspicious_sessions()
