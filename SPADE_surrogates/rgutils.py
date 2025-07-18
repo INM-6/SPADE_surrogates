@@ -1580,22 +1580,27 @@ def save_processed_data(data: List, output_path: Path) -> bool:
         print(f"         Full traceback:\n{traceback.format_exc()}")
         return False
     
-def load_processed_spike_trains(file_path: str) -> List[neo.SpikeTrain]:
+def load_processed_spike_trains(file_path: str, verbose: bool = False, align_boundaries: bool = True) -> List[neo.SpikeTrain]:
     """
     Load processed spike train data from a saved file and reconstruct neo.SpikeTrain objects.
     
     This function is designed to work with the data format saved by the improved
-    spike train processing pipeline.
+    spike train processing pipeline. Automatically fixes floating point precision
+    issues in spike train boundaries.
     
     Parameters
     ----------
     file_path : str
         Path to the saved spike train file (.npy format)
+    verbose : bool, optional
+        If True, print detailed loading information. Default: False
+    align_boundaries : bool, optional
+        If True, align all spike train boundaries to fix floating point precision issues. Default: True
         
     Returns
     -------
     List[neo.SpikeTrain]
-        List of reconstructed neo.SpikeTrain objects
+        List of reconstructed neo.SpikeTrain objects with consistent boundaries
         
     Example
     -------
@@ -1603,16 +1608,19 @@ def load_processed_spike_trains(file_path: str) -> List[neo.SpikeTrain]:
     >>> print(f"Loaded {len(spike_trains)} spike trains")
     """
     try:
-        print(f"   🔄 Loading spike train data from: {file_path}")
+        if verbose:
+            print(f"   🔄 Loading spike train data from: {file_path}")
         
         # Load the data
         data = np.load(file_path, allow_pickle=True)
         
         if len(data) == 0:
-            print(f"   ⚠️ Empty data file: {file_path}")
+            if verbose:
+                print(f"   ⚠️ Empty data file: {file_path}")
             return []
         
-        print(f"   📊 Found {len(data)} spike train records")
+        if verbose:
+            print(f"   📊 Found {len(data)} spike train records")
         
         # Reconstruct spike trains
         spike_trains = []
@@ -1634,7 +1642,8 @@ def load_processed_spike_trains(file_path: str) -> List[neo.SpikeTrain]:
                     continue
                     
                 else:
-                    print(f"   ⚠️ Unknown data format for spike train {i}: {type(spike_data)}")
+                    if verbose:
+                        print(f"   ⚠️ Unknown data format for spike train {i}: {type(spike_data)}")
                     continue
                 
                 # Parse units
@@ -1666,28 +1675,78 @@ def load_processed_spike_trains(file_path: str) -> List[neo.SpikeTrain]:
                 spike_trains.append(spike_train)
                 
             except Exception as e:
-                print(f"   ⚠️ Error reconstructing spike train {i}: {e}")
+                if verbose:
+                    print(f"   ⚠️ Error reconstructing spike train {i}: {e}")
                 continue
         
-        print(f"   ✅ Successfully reconstructed {len(spike_trains)} spike trains")
+        # Fix floating point precision issues in boundaries
+        if align_boundaries and spike_trains:
+            spike_trains = _align_spike_train_boundaries(spike_trains, verbose=verbose)
         
-        # Log some statistics
-        if spike_trains:
-            spike_counts = [len(st) for st in spike_trains]
-            total_spikes = sum(spike_counts)
-            print(f"      Total spikes across all units: {total_spikes:,}")
+        if verbose:
+            print(f"   ✅ Successfully reconstructed {len(spike_trains)} spike trains")
             
-            if total_spikes > 0:
-                print(f"      Mean spikes per unit: {np.mean(spike_counts):.1f}")
-                print(f"      Spike count range: {min(spike_counts)} - {max(spike_counts)}")
+            # Log some statistics
+            if spike_trains:
+                spike_counts = [len(st) for st in spike_trains]
+                total_spikes = sum(spike_counts)
+                print(f"      Total spikes across all units: {total_spikes:,}")
+                
+                if total_spikes > 0:
+                    print(f"      Mean spikes per unit: {np.mean(spike_counts):.1f}")
+                    print(f"      Spike count range: {min(spike_counts)} - {max(spike_counts)}")
         
         return spike_trains
         
     except Exception as e:
-        print(f"   ❌ Error loading spike trains from {file_path}: {e}")
-        import traceback
-        traceback.print_exc()
+        if verbose:
+            print(f"   ❌ Error loading spike trains from {file_path}: {e}")
+            import traceback
+            traceback.print_exc()
         return []
+
+
+def _align_spike_train_boundaries(spike_trains: List[neo.SpikeTrain], verbose: bool = False) -> List[neo.SpikeTrain]:
+    """
+    Align spike train boundaries to fix floating point precision issues.
+    """
+    if not spike_trains:
+        return spike_trains
+    
+    # Check if alignment is needed using UNROUNDED values
+    t_starts = [float(st.t_start) for st in spike_trains]
+    t_stops = [float(st.t_stop) for st in spike_trains]
+    
+    alignment_needed = len(set(t_starts)) > 1 or len(set(t_stops)) > 1
+    
+    if not alignment_needed:
+        return spike_trains
+    
+    # Round boundaries to reasonable precision (microsecond level)
+    ref_t_start = round(float(spike_trains[0].t_start), 6) * spike_trains[0].t_start.units
+    ref_t_stop = round(float(spike_trains[0].t_stop), 6) * spike_trains[0].t_stop.units
+    
+    if verbose:
+        print(f"   🔧 Aligning boundaries to: {ref_t_start} - {ref_t_stop}")
+        print(f"      Found {len(set(t_starts))} unique t_start values, {len(set(t_stops))} unique t_stop values")
+    
+    aligned_trains = []
+    for st in spike_trains:
+        # Create new spike train with aligned boundaries
+        aligned_st = neo.SpikeTrain(
+            st.times,
+            t_start=ref_t_start,
+            t_stop=ref_t_stop,
+            units=st.units
+        )
+        
+        # Preserve annotations
+        if hasattr(st, 'annotations'):
+            aligned_st.annotations = st.annotations.copy()
+            
+        aligned_trains.append(aligned_st)
+    
+    return aligned_trains
 
 
 # ==========================================================================
