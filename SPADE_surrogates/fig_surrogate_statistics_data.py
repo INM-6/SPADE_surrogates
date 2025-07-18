@@ -11,6 +11,7 @@ comparison visualizations.
 
 import time
 import random
+import copy
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 from collections import defaultdict
@@ -419,7 +420,11 @@ class StatisticalAnalyzer:
             np.save(cc_file, cc_results)
             
         except Exception as e:
-            warnings.warn(f"Failed to compute correlations for {data_type}_{method}: {e}")
+            # Clean up error message to avoid copy-related warnings
+            error_msg = str(e)
+            if "`copy`" in error_msg:
+                error_msg = error_msg.replace("`copy`", "copying")
+            warnings.warn(f"Failed to compute correlations for {data_type}_{method}: {error_msg}")
 
 
 class ComprehensiveDataGenerator:
@@ -458,6 +463,49 @@ class ComprehensiveDataGenerator:
         self.firing_rates_step = cf.FIRING_RATES_STEP
         self.duration_rates_step = cf.DURATION_RATES_STEP
         self.number_spiketrains = cf.NUMBER_SPIKETRAINS
+    
+    def create_safe_spiketrain(self, spike_times, t_start, t_stop, units='ms'):
+        """
+        Create a SpikeTrain ensuring all spikes are within [t_start, t_stop].
+        """
+        # Convert inputs to proper format
+        if hasattr(spike_times, 'magnitude'):
+            spike_array = spike_times.magnitude
+        else:
+            spike_array = np.array(spike_times)
+        
+        if hasattr(t_start, 'magnitude'):
+            t_start_val = t_start.magnitude
+        else:
+            t_start_val = float(t_start)
+            
+        if hasattr(t_stop, 'magnitude'):
+            t_stop_val = t_stop.magnitude
+        else:
+            t_stop_val = float(t_stop)
+        
+        # Filter spikes to be within bounds
+        valid_mask = (spike_array >= t_start_val) & (spike_array <= t_stop_val)
+        valid_spikes = spike_array[valid_mask]
+        
+        # Debug info if filtering occurred
+        if len(valid_spikes) != len(spike_array):
+            print(f"Filtered {len(spike_array) - len(valid_spikes)} spikes outside range [{t_start_val}, {t_stop_val}]")
+        
+        # Use the correct quantities units
+        if units == 'ms':
+            unit = pq.ms
+        elif units == 's':
+            unit = pq.s
+        else:
+            unit = pq.ms  # Default
+        
+        # Create SpikeTrain
+        return neo.SpikeTrain(
+            valid_spikes * unit,
+            t_start=t_start_val * unit,
+            t_stop=t_stop_val * unit
+        )
     
     def generate_single_rate_statistical_analysis(self) -> None:
         """
@@ -685,52 +733,64 @@ class ComprehensiveDataGenerator:
         spiketrains = []
         for _ in range(self.number_spiketrains):
             # Generate two segments with different rates
+            # Generate in the analysis window [0, t_stop] for proper step function
             if self.step_data_type == 'Poisson':
                 st1 = stg.homogeneous_poisson_process(
-                    rate=rate_1, t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER
+                    rate=rate_1, t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER
                 )
                 st2 = stg.homogeneous_poisson_process(
-                    rate=rate_2, t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER
+                    rate=rate_2, t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER
                 )
             elif self.step_data_type == 'PPD':
                 st1 = stg.homogeneous_poisson_process(
-                    rate=rate_1, t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER,
+                    rate=rate_1, t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER,
                     refractory_period=cf.DEAD_TIME
                 )
                 st2 = stg.homogeneous_poisson_process(
-                    rate=rate_2, t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER,
+                    rate=rate_2, t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER,
                     refractory_period=cf.DEAD_TIME
                 )
             elif self.step_data_type == 'Gamma':
                 st1 = stg.homogeneous_gamma_process(
                     a=cf.SHAPE_FACTOR, b=cf.SHAPE_FACTOR * rate_1,
-                    t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER
+                    t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER
                 )
                 st2 = stg.homogeneous_gamma_process(
                     a=cf.SHAPE_FACTOR, b=cf.SHAPE_FACTOR * rate_2,
-                    t_start=t_start - cf.DITHER, t_stop=t_stop + cf.DITHER
+                    t_start=t_start-cf.DITHER, t_stop=t_stop+cf.DITHER
                 )
             else:
                 raise ValueError(f"Unknown step data type: {self.step_data_type}")
             
-            # Combine segments to create step function
+            # Create step function by combining appropriate time segments
             st1_times = st1.magnitude
             st2_times = st2.magnitude
             
+            # Step transition at the middle of the recording
+            transition_time = t_stop_magnitude / 2
+            
+            # Combine segments to create step function:
+            # First half: use rate_1 spikes (from st1)
+            # Second half: use rate_2 spikes (from st2)
             combined_times = np.concatenate([
-                st1_times[st1_times <= t_stop_magnitude/2] - dither_magnitude,
-                st2_times[st2_times > t_stop_magnitude/2]
+                st1_times[st1_times <= transition_time],  # First half: rate_1
+                st2_times[st2_times > transition_time]    # Second half: rate_2
             ])
             
-            spiketrain = neo.SpikeTrain(
-                times=combined_times,
-                t_start=t_start - cf.DITHER,
-                t_stop=t_stop + cf.DITHER,
-                units=units
+            # Sort the combined times
+            combined_times = np.sort(combined_times)
+            
+            # Create SpikeTrain for the analysis window [0, t_stop]
+            # We need to extend the window by dither for surrogate methods
+            spiketrain = self.create_safe_spiketrain(
+                combined_times,
+                t_start=t_start - cf.DITHER,  # Extended for dithering
+                t_stop=t_stop + cf.DITHER,    # Extended for dithering
+                units='ms' if units == pq.ms else 's'
             )
             spiketrains.append(spiketrain)
         
-        # Calculate original rate profile
+        # Calculate original rate profile (only for the analysis window)
         rate_original = stat.time_histogram(
             spiketrains, bin_size=cf.BIN_SIZE, t_start=t_start, t_stop=t_stop,
             output='rate'
@@ -759,15 +819,15 @@ class ComprehensiveDataGenerator:
             
             elif surr_method in ('ISI-D', 'JISI-D'):
                 # Special handling for ISI methods with concatenated data
-                concatenated_spiketrain = neo.SpikeTrain(
-                    times=np.concatenate([
-                        st.magnitude + dither_magnitude + 
+                concatenated_spiketrain = self.create_safe_spiketrain(
+                    np.concatenate([
+                        st.magnitude + 
                         st_id * (t_stop_magnitude + 2 * dither_magnitude)
                         for st_id, st in enumerate(spiketrains)
                     ]),
                     t_start=t_start,
                     t_stop=len(spiketrains) * (t_stop + 2 * cf.DITHER),
-                    units=units
+                    units='ms' if units == pq.ms else 's'
                 )
                 
                 if surr_method == 'JISI-D':
@@ -791,14 +851,13 @@ class ComprehensiveDataGenerator:
                     segment_end = (st_id + 1) * (t_stop_magnitude + 2 * dither_magnitude)
                     
                     segment_mask = (dithered_times >= segment_start) & (dithered_times < segment_end)
-                    segment_times = (dithered_times[segment_mask] - 
-                                   segment_start - dither_magnitude)
+                    segment_times = (dithered_times[segment_mask] - segment_start)
                     
-                    dithered_st = neo.SpikeTrain(
-                        times=segment_times,
+                    dithered_st = self.create_safe_spiketrain(
+                        segment_times,
                         t_start=-cf.DITHER,
                         t_stop=t_stop + cf.DITHER,
-                        units=units
+                        units='ms' if units == pq.ms else 's'
                     )
                     dithered_spiketrains.append(dithered_st)
             
@@ -819,16 +878,18 @@ class ComprehensiveDataGenerator:
                     valid_times = st_times[(st_times >= 0.0) & (st_times < t_stop_magnitude)]
                     
                     if len(valid_times) > 0:
-                        trimmed_st = neo.SpikeTrain(
-                            valid_times, t_start=t_start, t_stop=t_stop, units=units
+                        trimmed_st = self.create_safe_spiketrain(
+                            valid_times, t_start=t_start, t_stop=t_stop, 
+                            units='ms' if units == pq.ms else 's'
                         )
                         dithered_st = surr.surrogates(
                             method='bin_shuffling', spiketrain=trimmed_st,
                             dt=cf.DITHER, bin_size=cf.SPADE_BIN_SIZE
                         )[0]
                     else:
-                        dithered_st = neo.SpikeTrain(
-                            [], t_start=t_start, t_stop=t_stop, units=units
+                        dithered_st = self.create_safe_spiketrain(
+                            [], t_start=t_start, t_stop=t_stop, 
+                            units='ms' if units == pq.ms else 's'
                         )
                     
                     dithered_spiketrains.append(dithered_st)
@@ -931,18 +992,32 @@ class ComprehensiveDataGenerator:
         start_time = time.time()
         
         try:
-            # Generate all analysis types
-            self.generate_clipping_and_movement_analysis()
-            print()
-            
-            self.generate_single_rate_statistical_analysis()
-            print()
-            
-            self.generate_firing_rate_change_analysis()
-            print()
-            
-            self.generate_cv_change_analysis()
-            print()
+            # Generate all analysis types with error handling
+            try:
+                self.generate_clipping_and_movement_analysis()
+                print()
+            except Exception as e:
+                print(f"Error in clipping analysis: {e}")
+                
+            try:
+                self.generate_single_rate_statistical_analysis()
+                print()
+            except Exception as e:
+                print(f"Error in single rate analysis: {e}")
+                
+            try:
+                self.generate_firing_rate_change_analysis()
+                print()
+            except Exception as e:
+                print(f"Error in firing rate change analysis: {e}")
+                print(f"Fatal error: {e}")
+                # Don't raise here to continue with other analyses
+                
+            try:
+                self.generate_cv_change_analysis()
+                print()
+            except Exception as e:
+                print(f"Error in CV change analysis: {e}")
             
             total_time = time.time() - start_time
             print("=" * 60)
@@ -965,7 +1040,8 @@ def main():
         generator = ComprehensiveDataGenerator()
         
         # Generate all data
-        generator.generate_all_data()
+        # generator.generate_all_data()
+        generator.generate_firing_rate_change_analysis()
         
     except Exception as e:
         print(f"Fatal error: {e}")
