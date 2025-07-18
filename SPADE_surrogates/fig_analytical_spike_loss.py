@@ -285,7 +285,7 @@ def create_analytical_spike_count_figure(firing_rates: pq.Quantity,
         Path where to save the output figure
     """
     # Set up color scheme
-    colormap = colormaps.get_cmap(COLORMAP_NAME)
+    colormap = plt.get_cmap(COLORMAP_NAME)
     colors = [colormap(intensity) for intensity in COLOR_INTENSITIES]
     
     # Create figure with two subplots
