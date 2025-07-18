@@ -50,9 +50,10 @@ mpl.rcParams['grid.linewidth'] = 0.5
 mpl.rcParams['text.usetex'] = False  # Don't use LaTeX (can cause Type 3 fonts)
 mpl.rcParams['axes.unicode_minus'] = False  # Use ASCII minus sign
 
-# DIN A4 landscape image dimensions (maintain original aspect ratio)
-DIN_A4_WIDTH = 10.5   # inches (11.7" - margins)
-DIN_A4_HEIGHT = 7.0   # inches (maintain ~1.5:1 aspect ratio)
+# ANU thesis textwidth dimensions (4 rows x 3 columns)
+ANU_TEXTWIDTH_MM = 150   # mm (exact from anuthesis.sty)
+ANU_TEXTWIDTH = ANU_TEXTWIDTH_MM / 25.4  # inches (150mm = 5.906 inches)
+FIGURE_HEIGHT = ANU_TEXTWIDTH * 4/3      # inches (4:3 ratio = 7.874 inches)
 
 
 class CleanModernSurrogateStatisticsPlotter:
@@ -182,7 +183,7 @@ class CleanModernSurrogateStatisticsPlotter:
         """Create inset axes for ISI plots exactly like original."""
         axes_insets = []
         for type_id, _ in enumerate(self.data_types):
-            width, height = 1.5*0.7, 2*0.3
+            width, height = 0.7, 0.7
             inset = inset_axes(axes_isi[type_id], width, height)
             inset.set_xlim(-0.5, 5.5)
             firing_rate = getattr(cf, 'FIRING_RATE', 50)
@@ -286,7 +287,7 @@ class CleanModernSurrogateStatisticsPlotter:
         
         # Set labels and ticks
         axis.set_xlabel('t (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
-        axis.set_ylabel('Firing rate (Hz)', labelpad=getattr(cf, 'YLABELPAD', 5))
+        axis.set_ylabel('λ(t) (Hz)', labelpad=getattr(cf, 'YLABELPAD', 5))
         
         if hasattr(cf, 'DURATION_RATES_STEP'):
             t_stop = cf.DURATION_RATES_STEP.rescale(pq.ms).magnitude
@@ -367,50 +368,87 @@ class CleanModernSurrogateStatisticsPlotter:
                          **surr_params)
         
         # Set labels
-        axis.set_xlabel('Original CV', labelpad=getattr(cf, 'XLABELPAD', 5))
-        axis.set_ylabel('Surrogate CV', labelpad=getattr(cf, 'YLABELPAD', 5))
+        axis.set_xlabel('CV - original', labelpad=getattr(cf, 'XLABELPAD', 5))
+        axis.set_ylabel('CV - surrogate', labelpad=getattr(cf, 'YLABELPAD', 5))
+        
+        # Set specific ticks for CV plot
+        axis.set_xticks([0.6, 0.8, 1.0])
+        axis.set_yticks([0.6, 0.8, 1.0])
+        axis.set_xlim(0.55, 1.05)
+        axis.set_ylim(0.55, 1.05)
         
         return True
     
     def create_comprehensive_figure(self) -> None:
         """Create and save the comprehensive statistical overview figure."""
-        # Create figure with DIN A4 width but original aspect ratio
-        fig = plt.figure(figsize=(DIN_A4_WIDTH, DIN_A4_HEIGHT), dpi=300)
+        # Create figure with exact 150mm width and 4:3 aspect ratio
+        fig = plt.figure(figsize=(ANU_TEXTWIDTH, FIGURE_HEIGHT), dpi=300)
         fig.patch.set_facecolor('white')
         
-        # Create main subplot grid (3x3 for ISI, AC, CC) using original layout
+        # Calculate subplot dimensions with extra spacing before last row
+        margin_left = 0.08
+        margin_right = 0.02
+        margin_top = 0.05    # Reduced top margin to ensure upper row is visible
+        margin_bottom = 0.08  # Updated margin
+        
+        spacing_horizontal = 0.08  # Increased for better y-tick visibility
+        spacing_vertical = 0.03
+        spacing_before_last_row = 0.12  # Updated spacing
+        
+        # Calculate available space for 3 main rows + 1 additional row
+        available_height = 1 - margin_top - margin_bottom - 2 * spacing_vertical - spacing_before_last_row
+        main_panel_height = available_height * 0.75 / 3  # 75% for main 3 rows
+        additional_panel_height = available_height * 0.25  # 25% for additional row
+        
+        panel_width = (1 - margin_left - margin_right - 2 * spacing_horizontal) / 3
+        
+        # Create main subplot grid (4 rows x 3 columns) with better spacing
         axes = []
-        for row in range(3):
+        for row in range(4):  # 4 rows: Data types 1-3, Additional
             row_axes = []
-            for col in range(3):
-                left = cf.distance_left_border + cf.width_figure * col
-                bottom = (cf.distance_bottom_border - 
-                         (row - 2) * (cf.height_figure + cf.distance_vertical_panels))
+            for col in range(3):  # 3 columns: 3 analysis types
+                left = margin_left + col * (panel_width + spacing_horizontal)
                 
-                ax = fig.add_axes([left, bottom, cf.width_figure, cf.height_figure])
+                if row < 3:  # First 3 rows (main data)
+                    panel_height = main_panel_height
+                    bottom = (margin_bottom + additional_panel_height + spacing_before_last_row + 
+                             (2 - row) * (main_panel_height + spacing_vertical))
+                else:  # Last row (additional analyses)
+                    panel_height = additional_panel_height
+                    bottom = margin_bottom
+                
+                ax = fig.add_axes([left, bottom, panel_width, panel_height])
                 self._apply_modern_axis_styling(ax)
                 row_axes.append(ax)
             axes.append(row_axes)
         
-        # Create right-side axes (like original)
-        right_axes = []
-        for row in range(3):
-            left = (cf.distance_left_border + cf.width_figure * 3 + 
-                   cf.distance_horizontal_panels)
-            bottom = (cf.distance_bottom_border - 
-                     (row - 2) * (cf.height_figure + cf.distance_vertical_panels))
-            
-            ax = fig.add_axes([left, bottom, cf.width_figure, cf.height_figure])
-            self._apply_modern_axis_styling(ax)
-            right_axes.append(ax)
+        # Add a subtle separating line before the last row
+        line_y = margin_bottom + additional_panel_height + spacing_before_last_row / 2
+        fig.add_artist(plt.Line2D([margin_left, 1 - margin_right], [line_y, line_y], 
+                                 color='gray', linewidth=0.8, alpha=0.5))
         
-        axes_isi, axes_cc, axes_ac = axes
-        axis_cv, axis_moved, axis_step = right_axes
+        # Assign axes to meaningful names (TRANSPOSED)
+        # Now each data type gets a row, and each analysis type gets a column
+        axes_data_type_1 = axes[0]  # Row 1: Data type 1 (ISI, AC, CC)
+        axes_data_type_2 = axes[1]  # Row 2: Data type 2 (ISI, AC, CC)  
+        axes_data_type_3 = axes[2]  # Row 3: Data type 3 (ISI, AC, CC)
+        axes_additional = axes[3]   # Row 4: Additional analyses
         
-        # Set y-axis labels
-        axes_isi[0].set_ylabel('ISI-distribution', labelpad=getattr(cf, 'YLABELPAD', 5))
-        axes_ac[0].set_ylabel('Autocorrelation', labelpad=getattr(cf, 'YLABELPAD', 5))
-        axes_cc[0].set_ylabel('Cross-correlation', labelpad=getattr(cf, 'YLABELPAD', 5))
+        # For compatibility with existing plotting code, create column-wise access
+        axes_isi = [axes_data_type_1[0], axes_data_type_2[0], axes_data_type_3[0]]  # Col 1: ISI for all data types
+        axes_ac = [axes_data_type_1[1], axes_data_type_2[1], axes_data_type_3[1]]   # Col 2: AC for all data types
+        axes_cc = [axes_data_type_1[2], axes_data_type_2[2], axes_data_type_3[2]]   # Col 3: CC for all data types
+        
+        # Individual additional analysis axes
+        axis_cv = axes_additional[0]      # Panel J: CV analysis
+        axis_moved = axes_additional[1]   # Panel K: Spike movement  
+        axis_step = axes_additional[2]    # Panel L: Firing rate
+        
+        # Set y-axis labels with simplified data type names
+        data_type_names = ['Poisson', 'PPD', 'Gamma']  # Simplified names
+        axes_data_type_1[0].set_ylabel(f'{data_type_names[0]}', labelpad=getattr(cf, 'YLABELPAD', 5))
+        axes_data_type_2[0].set_ylabel(f'{data_type_names[1]}', labelpad=getattr(cf, 'YLABELPAD', 5))
+        axes_data_type_3[0].set_ylabel(f'{data_type_names[2]}', labelpad=getattr(cf, 'YLABELPAD', 5))
         
         # Create inset axes for ISI plots
         axes_insets = self._create_inset_axes(axes_isi)
@@ -437,46 +475,65 @@ class CleanModernSurrogateStatisticsPlotter:
         self._plot_spike_movement_efficiency(axis_moved)
         self._plot_cv_change(axis_cv)
         
-        # Set x-axis labels
-        for axis_isi in axes_isi:
-            axis_isi.set_xlabel('t (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
-        for axis_ac in axes_ac:
-            axis_ac.set_xlabel('τ (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
-        for axis_cc in axes_cc:
-            axis_cc.set_xlabel('τ (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
+        # Set x-axis labels (now different due to transpose)
+        # Bottom row of main 3x3 grid gets x-labels
+        axes_data_type_3[0].set_xlabel('ISI: t (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
+        axes_data_type_3[1].set_xlabel('time lag: τ (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
+        axes_data_type_3[2].set_xlabel('time lag: τ (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
         
-        # Add titles only for main plots (A, B, C - not D, E, F)
-        for data_id, data_type in enumerate(self.data_types):
-            axes[0][data_id].set_title(data_type, fontsize=10, fontweight='bold')
+        # Additional analyses also get x-labels and y-labels
+        for axis in axes_additional:
+            if axis == axis_cv:
+                axis.set_xlabel('Original CV', labelpad=getattr(cf, 'XLABELPAD', 5))
+                axis.set_ylabel('Surrogate CV', labelpad=getattr(cf, 'YLABELPAD', 5))
+            elif axis == axis_moved:
+                axis.set_xlabel('λ (Hz)', labelpad=getattr(cf, 'XLABELPAD', 5))
+                axis.set_ylabel('Moved Spikes Ratio', labelpad=getattr(cf, 'YLABELPAD', 5))
+            elif axis == axis_step:
+                axis.set_xlabel('t (ms)', labelpad=getattr(cf, 'XLABELPAD', 5))
+                axis.set_ylabel('λ(t) (Hz)', labelpad=getattr(cf, 'YLABELPAD', 5))
         
-        # Add subplot labels (A, B, C, etc.) - make them bold
-        letters = getattr(cf, 'LETTERS', ['A', 'B', 'C', 'D', 'E', 'F'])
-        for axis_id, axis_row in enumerate(axes):
-            if axis_id < len(letters):
-                axis_row[0].text(-0.25, 1.05, letters[axis_id],
-                               transform=axis_row[0].transAxes, fontsize=12, fontweight='bold')
+        # Add titles only for top row (now analysis types instead of data types)
+        axes_data_type_1[0].set_title('ISI-distribution', fontsize=10)
+        axes_data_type_1[1].set_title('Autocorrelation', fontsize=10)
+        axes_data_type_1[2].set_title('Cross-correlation', fontsize=10)
         
-        for axis_id, axis in enumerate(right_axes):
-            letter_id = len(axes) + axis_id
-            if letter_id < len(letters):
-                axis.text(-0.15, 1.05, letters[letter_id],
-                         transform=axis.transAxes, fontsize=12, fontweight='bold')
+        # Add subplot labels (A through L) for 4x3 grid - ensure all 12 are positioned
+        letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']
         
-        # Hide redundant labels
-        for axis_row in axes:
-            for axis in axis_row[1:]:
-                axis.set_yticklabels([])
-                axis.tick_params(left=False)
+        # Label each position in the 4x3 grid (row by row)
+        label_index = 0
+        for row in range(4):
+            for col in range(3):
+                if label_index < len(letters):
+                    # Position labels more carefully to ensure they're visible
+                    axes[row][col].text(-0.14, 1.08, letters[label_index],
+                                       transform=axes[row][col].transAxes, 
+                                       fontsize=12, fontweight='bold',
+                                       ha='center', va='bottom')
+                    label_index += 1
         
-        # Synchronize y-limits
-        for axes_row in axes:
-            ylims = [axis.get_ylim() for axis in axes_row]
+        # Hide redundant labels for cleaner appearance (adapted for transpose)
+        # Hide y-labels for columns 2 and 3 in first 3 rows (keep only leftmost column)
+        for row_id in range(3):  # First 3 rows
+            for col_id in range(1, 3):  # Columns 2 and 3
+                axes[row_id][col_id].set_yticklabels([])
+                axes[row_id][col_id].tick_params(left=False)
+        
+        # For additional analyses row: keep all y-ticks visible (don't hide any)
+        # This ensures all three bottom plots have y-ticks
+        
+        # Synchronize y-limits within each row (each data type)
+        for row_id in range(3):  # First 3 rows (data types)
+            ylims = [axes[row_id][col].get_ylim() for col in range(3)]
             unified_ylim = (
                 min(ylim[0] for ylim in ylims),
                 max(ylim[1] for ylim in ylims)
             )
-            for axis in axes_row:
-                axis.set_ylim(unified_ylim)
+            for col in range(3):
+                axes[row_id][col].set_ylim(unified_ylim)
+        
+        # Don't synchronize the additional analyses row - they have different scales
         
         # Add legend with less space at bottom
         if success_count > 0:
