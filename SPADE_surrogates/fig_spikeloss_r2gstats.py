@@ -464,7 +464,7 @@ def plot_dead_time_distribution(spike_trains, ax, sorting_dead_time, trial_separ
     # Calculate dead times for each neuron
     dead_times = []
     for spike_train in spike_trains:
-        _, dead_time = estimate_rate_deadtime(
+        _, dead_time, _ = estimate_rate_deadtime(
             spike_train,
             max_refractory=max_refractory,
             sampling_period=1 * pq.ms,
@@ -599,7 +599,7 @@ def create_spike_count_reduction_figure(data_folder, sessions, epoch, trial_type
         isi_grid = gridspec.GridSpecFromSubplotSpec(
             nrows=2, ncols=1, subplot_spec=panel_b_grid[i], hspace=0)
         
-        for j, neuron_idx in enumerate(example_neurons[session[0]]):
+        for j, neuron_idx in enumerate(example_neurons[session_name[-1]]):
             ax = fig.add_subplot(isi_grid[j])
             
             show_xlabel = (j == 1)  # Only bottom subplot gets x-label
@@ -652,7 +652,7 @@ def create_spike_count_reduction_figure(data_folder, sessions, epoch, trial_type
             dt_axes.append(ax_dt)
         
         plot_dead_time_distribution(
-            session_data[session], ax_dt, sorting_dead_times[session[0]],
+            session_data[session], ax_dt, sorting_dead_times[session_name[-1]],
             trial_separation, fontsize=fontsize, show_ylabel=show_ylabel)
     
     # Align y-labels for better appearance
@@ -660,8 +660,8 @@ def create_spike_count_reduction_figure(data_folder, sessions, epoch, trial_type
     
     # Save figure
     plt.rcParams.update({'font.size': 10})
-    fig.savefig('../plots/fig_spikeloss_r2gstats.png')
-    fig.savefig('../plots/fig_spikeloss_r2gstats.pdf')
+    fig.savefig('../plots/fig_spikeloss_r2gstats.png', dpi=300)
+    fig.savefig('../plots/fig_spikeloss_r2gstats.pdf', dpi=300)
 
 
 def main():
@@ -674,7 +674,7 @@ def main():
         config = yaml.load(stream, Loader=Loader)
     
     # Extract configuration parameters
-    sessions = config['sessions']
+    sessions = config['reduced_sessions']
     bin_size = config['binsize'] * pq.s
     window_length = config['winlen']
     dither_amount = config['dither']
