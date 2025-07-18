@@ -932,7 +932,7 @@ if __name__ == "__main__":
     # main()
     
     # Uncomment the line below to create summary plot for all sessions
-    # create_summary_plot()
+    create_summary_plot()
     
     # Analyze suspicious sessions with high pattern counts
-    analyze_suspicious_sessions()
+    # analyze_suspicious_sessions()
