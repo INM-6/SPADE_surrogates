@@ -7,7 +7,7 @@ import os
 import numpy as np
 import quantities as pq
 
-from generate_artificial_data import get_shape_factor_from_cv2
+from generate_artificial_data import shape_factor_from_cv2
 
 DATA_PATH = '../data/surrogate_statistics'
 PLOT_PATH = '../plots'
@@ -67,7 +67,7 @@ TRIAL_SEPARATION = 0. * pq.ms
 DEAD_TIME = 1.6 * pq.ms
 CV2 = 0.75
 
-SHAPE_FACTOR = get_shape_factor_from_cv2(CV2)
+SHAPE_FACTOR = shape_factor_from_cv2(CV2)
 
 
 #  plotting
@@ -125,7 +125,7 @@ width_figure = (1. - (distance_left_border + distance_right_border
                       + distance_horizontal_panels)) / 4
 
 distance_top_border = 0.05
-distance_bottom_border = 0.16
+distance_bottom_border = 0.08
 
 distance_vertical_panels = 0.09
 
